@@ -15,6 +15,7 @@ private enum Palette {
 private struct TaskSnapshot: Decodable {
     let generatedAt: String
     let tasks: [AgentTask]
+    let ignoredTaskIds: [String]?
 }
 
 private struct AgentTask: Decodable, Identifiable {
@@ -113,6 +114,7 @@ private enum ConversationFilter: String, CaseIterable, Identifiable {
 @MainActor
 private final class TaskStore: ObservableObject {
     @Published private(set) var tasks: [AgentTask] = []
+    @Published private(set) var ignoredTaskIDs: [String] = []
     @Published private(set) var generatedAt: String?
     @Published private(set) var message: String = "正在读取任务…"
     @Published private(set) var hasSnapshot = false
@@ -121,7 +123,7 @@ private final class TaskStore: ObservableObject {
         .appendingPathComponent(".agent-pet/tasks.json")
 
     private var timer: Timer?
-    var onSnapshot: (([AgentTask]) -> Void)?
+    var onSnapshot: (([AgentTask], [String]) -> Void)?
 
     init() {
         reload()
@@ -133,6 +135,7 @@ private final class TaskStore: ObservableObject {
     func reload() {
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
             tasks = []
+            ignoredTaskIDs = []
             generatedAt = nil
             hasSnapshot = false
             message = "等待任务数据。采集器尚未写入 tasks.json。"
@@ -143,18 +146,21 @@ private final class TaskStore: ObservableObject {
             let decoder = JSONDecoder()
             decoder.keyDecodingStrategy = .convertFromSnakeCase
             let snapshot = try decoder.decode(TaskSnapshot.self, from: data)
-            tasks = snapshot.tasks
+            var ignored = Set(snapshot.ignoredTaskIds ?? [])
+            ignored.formUnion(snapshot.tasks.filter { $0.id.hasPrefix("claude-agent:") }.map(\.id))
+            ignoredTaskIDs = Array(ignored)
+            tasks = snapshot.tasks.filter { !ignored.contains($0.id) }
             generatedAt = snapshot.generatedAt
             hasSnapshot = true
-            message = snapshot.tasks.isEmpty ? "目前没有观察到任务。" : ""
-            onSnapshot?(snapshot.tasks)
+            message = tasks.isEmpty ? "目前没有观察到任务。" : ""
+            onSnapshot?(tasks, ignoredTaskIDs)
         } catch {
             // Keep the last good snapshot if a writer is replacing the file.
             message = "本次读取失败：\(error.localizedDescription)"
         }
     }
 
-    private func families(for selected: [AgentTask]) -> [TaskFamily] {
+    func families(for selected: [AgentTask]) -> [TaskFamily] {
         let grouped = Dictionary(grouping: selected, by: \.familyKey)
         return grouped.map { key, entries in
             let ordered = entries.sorted { $0.updatedAt > $1.updatedAt }
@@ -393,6 +399,7 @@ private struct TaskRow: View {
     let task: AgentTask
     let isUnread: Bool
     let onOpen: (AgentTask) -> Void
+    let onResolve: (AgentTask) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -406,6 +413,14 @@ private struct TaskRow: View {
                     .foregroundStyle(Palette.ink)
                     .lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                Toggle("已处理", isOn: Binding(
+                    get: { false },
+                    set: { if $0 { onResolve(task) } }
+                ))
+                .toggleStyle(.checkbox)
+                .font(.system(size: 10))
+                .fixedSize()
+                .help("将这条任务标记为已处理")
                 if task.destination != nil {
                     Button {
                         onOpen(task)
@@ -447,6 +462,7 @@ private struct FamilyCard: View {
     let family: TaskFamily
     let unreadIDs: Set<String>
     let onOpen: (AgentTask) -> Void
+    let onResolve: (AgentTask) -> Void
     @State private var expanded = false
 
     var body: some View {
@@ -481,7 +497,8 @@ private struct FamilyCard: View {
 
             if expanded {
                 ForEach(family.tasks) { task in
-                    TaskRow(task: task, isUnread: unreadIDs.contains(task.id), onOpen: onOpen)
+                    TaskRow(task: task, isUnread: unreadIDs.contains(task.id),
+                            onOpen: onOpen, onResolve: onResolve)
                 }
             }
         }
@@ -505,6 +522,7 @@ private final class DashboardRoute: ObservableObject {
 private struct DashboardView: View {
     @ObservedObject var store: TaskStore
     @ObservedObject var inbox: AnswerInbox
+    @ObservedObject var resolutions: ManualResolutionStore
     @ObservedObject var thoughtStore: ThoughtStore
     @ObservedObject var route: DashboardRoute
     let onClose: () -> Void
@@ -515,6 +533,8 @@ private struct DashboardView: View {
     @State private var thoughtDraft = ""
     @State private var thoughtFeedback = ""
     @State private var showThoughts = false
+    @State private var showResolved = false
+    @State private var resolutionFeedback = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -594,8 +614,19 @@ private struct DashboardView: View {
                     if store.uncategorizedCount > 0 {
                         emptyLabel("另有 \(store.uncategorizedCount) 条来源未识别的记录，暂未归入这两个来源。")
                     }
+                    if !resolutionFeedback.isEmpty {
+                        Text(resolutionFeedback)
+                            .font(.system(size: 11))
+                            .foregroundStyle(Palette.muted)
+                    }
+                    if resolutions.storageError != nil {
+                        Text("已处理记录暂时无法保存；请检查本机存储。")
+                            .font(.system(size: 11))
+                            .foregroundStyle(StatusStyle.color("failed"))
+                    }
 
                     conversationContent
+                    resolvedSection
                     thoughtsHistory
                 }
                 .padding(.vertical, 13)
@@ -706,23 +737,28 @@ private struct DashboardView: View {
     @ViewBuilder
     private var conversationContent: some View {
         if selectedFilter == .active {
-            sectionTitle("活跃对话", count: store.count(in: selectedCategory, filter: .active))
-            if store.families(in: selectedCategory, filter: .active).isEmpty {
+            let active = visibleTasks(in: selectedCategory, filter: .active)
+            let families = store.families(for: active)
+            sectionTitle("活跃对话", count: active.count)
+            if families.isEmpty {
                 emptyLabel(ConversationFilter.active.emptyMessage)
             } else {
-                ForEach(store.families(in: selectedCategory, filter: .active)) { family in
-                    FamilyCard(family: family, unreadIDs: unreadIDs, onOpen: openTask)
+                ForEach(families) { family in
+                    FamilyCard(family: family, unreadIDs: unreadIDs,
+                               onOpen: openTask, onResolve: resolveTask)
                 }
             }
         } else {
-            let pending = store.families(in: selectedCategory, filter: .needsHandling)
+            let pendingTasks = visibleTasks(in: selectedCategory, filter: .needsHandling)
+            let pending = store.families(for: pendingTasks)
             let unread = unreadAnswers(in: selectedCategory)
             if pending.isEmpty && unread.isEmpty {
                 emptyLabel(ConversationFilter.needsHandling.emptyMessage)
             } else {
-                sectionTitle("待你操作", count: store.count(in: selectedCategory, filter: .needsHandling))
+                sectionTitle("待你操作", count: pendingTasks.count)
                 ForEach(pending) { family in
-                    FamilyCard(family: family, unreadIDs: unreadIDs, onOpen: openTask)
+                    FamilyCard(family: family, unreadIDs: unreadIDs,
+                               onOpen: openTask, onResolve: resolveTask)
                 }
                 sectionTitle("未查看的新回答", count: unread.count)
                 ForEach(unread) { answer in
@@ -732,19 +768,66 @@ private struct DashboardView: View {
         }
     }
 
+    @ViewBuilder
+    private var resolvedSection: some View {
+        let entries = resolutions.resolved
+            .filter { selectedCategory.includes($0.source) }
+            .sorted { $0.resolvedAt > $1.resolvedAt }
+        if !entries.isEmpty {
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) { showResolved.toggle() }
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: showResolved ? "chevron.down" : "chevron.right")
+                    Text("已处理").font(.system(size: 12, weight: .semibold))
+                    Text("\(entries.count)").font(.system(size: 10))
+                    Spacer()
+                }
+                .foregroundStyle(Palette.muted)
+            }
+            .buttonStyle(.plain)
+            .accessibilityValue(showResolved ? "已展开" : "已折叠")
+            if showResolved {
+                ForEach(entries) { entry in
+                    Toggle(isOn: Binding(
+                        get: { true },
+                        set: { if !$0 { restoreTask(id: entry.id) } }
+                    )) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(entry.title.isEmpty ? "未命名对话" : entry.title)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(Palette.ink)
+                            Text("取消勾选即可恢复")
+                                .font(.system(size: 10))
+                                .foregroundStyle(Palette.muted)
+                        }
+                    }
+                    .toggleStyle(.checkbox)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+                    .background(Palette.card, in: RoundedRectangle(cornerRadius: 11))
+                }
+            }
+        }
+    }
+
     private var unreadIDs: Set<String> { Set(inbox.unread.map(\.id)) }
 
+    private func visibleTasks(in category: SourceCategory, filter: ConversationFilter) -> [AgentTask] {
+        store.tasks(in: category, filter: filter).filter { !resolutions.isResolved(id: $0.id) }
+    }
+
     private func unreadAnswers(in category: SourceCategory) -> [UnreadAnswer] {
-        inbox.unread.filter { category.includes($0.source) }
+        inbox.unread.filter { category.includes($0.source) && !resolutions.isResolved(id: $0.id) }
     }
 
     private func filterCount(in category: SourceCategory) -> Int {
-        if selectedFilter == .active { return store.count(in: category, filter: .active) }
+        if selectedFilter == .active { return visibleTasks(in: category, filter: .active).count }
         return filterCountForNeeds(in: category)
     }
 
     private func filterCountForNeeds(in category: SourceCategory) -> Int {
-        let pending = store.tasks(in: category, filter: .needsHandling).map(\.id)
+        let pending = visibleTasks(in: category, filter: .needsHandling).map(\.id)
         let unread = unreadAnswers(in: category).map(\.id)
         return Set(pending + unread).count
     }
@@ -758,6 +841,14 @@ private struct DashboardView: View {
                     .foregroundStyle(Palette.ink)
                     .lineLimit(2)
                 Spacer()
+                Toggle("已处理", isOn: Binding(
+                    get: { false },
+                    set: { if $0 { resolveUnread(answer) } }
+                ))
+                .toggleStyle(.checkbox)
+                .font(.system(size: 10))
+                .fixedSize()
+                .help("将这条新回答标记为已处理")
             }
             HStack(spacing: 8) {
                 SourcePill(source: answer.source)
@@ -793,6 +884,47 @@ private struct DashboardView: View {
     private func openTask(_ task: AgentTask) {
         guard let destination = task.destination else { return }
         if NSWorkspace.shared.open(destination) { inbox.markRead(id: task.id) }
+    }
+
+    private func resolveTask(_ task: AgentTask) {
+        let observation = TaskResolutionObservation(id: task.id, source: task.source,
+                                                    title: task.title, status: task.status,
+                                                    revision: task.answerRevision)
+        do {
+            try resolutions.markResolved(observation)
+            inbox.markRead(id: task.id)
+            showResolved = true
+            resolutionFeedback = "已移到下方“已处理”，可取消勾选恢复。"
+        } catch {
+            resolutionFeedback = "保存已处理状态失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func resolveUnread(_ answer: UnreadAnswer) {
+        if let task = store.tasks.first(where: { $0.id == answer.id }) {
+            resolveTask(task)
+            return
+        }
+        let observation = TaskResolutionObservation(id: answer.id, source: answer.source,
+                                                    title: answer.title, status: "idle",
+                                                    revision: answer.revision)
+        do {
+            try resolutions.markResolved(observation)
+            inbox.markRead(id: answer.id)
+            showResolved = true
+            resolutionFeedback = "已移到下方“已处理”，可取消勾选恢复。"
+        } catch {
+            resolutionFeedback = "保存已处理状态失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func restoreTask(id: String) {
+        do {
+            try resolutions.restore(id: id)
+            resolutionFeedback = ""
+        } catch {
+            resolutionFeedback = "恢复任务失败：\(error.localizedDescription)"
+        }
     }
 
     private var categoryTabs: some View {
@@ -841,7 +973,7 @@ private struct DashboardView: View {
                     HStack(spacing: 6) {
                         Text(filter.title)
                             .font(.system(size: 12, weight: selected ? .bold : .medium))
-                        Text("\(filter == .active ? store.count(in: selectedCategory, filter: .active) : filterCountForNeeds(in: selectedCategory))")
+                        Text("\(filter == .active ? visibleTasks(in: selectedCategory, filter: .active).count : filterCountForNeeds(in: selectedCategory))")
                             .font(.system(size: 10, weight: .bold, design: .rounded))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
@@ -942,6 +1074,7 @@ private final class FloatingPanel: NSPanel {
 private final class PetAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let store = TaskStore()
     private let inbox = AnswerInbox()
+    private let resolutions = ManualResolutionStore()
     private let thoughtStore = ThoughtStore()
     private let notifier = LocalNotifier()
     private let route = DashboardRoute()
@@ -953,8 +1086,10 @@ private final class PetAppDelegate: NSObject, NSApplicationDelegate, NSWindowDel
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         notifier.prepare(onOpen: { [weak self] taskID in self?.openFromNotification(taskID) })
-        store.onSnapshot = { [weak self] tasks in self?.handleSnapshot(tasks) }
-        if store.hasSnapshot { handleSnapshot(store.tasks) }
+        store.onSnapshot = { [weak self] tasks, ignoredIDs in
+            self?.handleSnapshot(tasks, ignoredIDs: ignoredIDs)
+        }
+        if store.hasSnapshot { handleSnapshot(store.tasks, ignoredIDs: store.ignoredTaskIDs) }
         let petSize = NSSize(width: 118, height: 126)
         let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1200, height: 800)
         let petFrame = NSRect(x: screen.maxX - petSize.width - 28,
@@ -975,6 +1110,7 @@ private final class PetAppDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         let dashboardView = HoverHostingView(rootView: DashboardView(
             store: store,
             inbox: inbox,
+            resolutions: resolutions,
             thoughtStore: thoughtStore,
             route: route,
             onClose: { [weak self] in self?.hideDashboard() },
@@ -989,13 +1125,31 @@ private final class PetAppDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         }
     }
 
-    private func handleSnapshot(_ tasks: [AgentTask]) {
+    private func handleSnapshot(_ tasks: [AgentTask], ignoredIDs: [String]) {
+        var ignored = Set(ignoredIDs)
+        ignored.formUnion(tasks.filter { $0.id.hasPrefix("claude-agent:") }.map(\.id))
+        ignored.formUnion(inbox.unread.filter { $0.id.hasPrefix("claude-agent:") }.map(\.id))
+        ignored.formUnion(resolutions.resolved.filter { $0.id.hasPrefix("claude-agent:") }.map(\.id))
+        inbox.discard(ids: ignored)
+        resolutions.discard(ids: ignored)
+        let tasks = tasks.filter { !ignored.contains($0.id) }
+        let resolutionObservations = tasks.map { task in
+            TaskResolutionObservation(id: task.id, source: task.source, title: task.title,
+                                      status: task.status, revision: task.answerRevision)
+        }
+        resolutions.reconcile(resolutionObservations)
         let observations = tasks.map { task in
             AnswerObservation(id: task.id, source: task.source, title: task.title,
                               status: task.status, updatedAt: task.updatedAt,
                               revision: task.answerRevision, url: task.url)
         }
-        for answer in inbox.ingest(observations) {
+        let arrivals = inbox.ingest(observations)
+        for entry in resolutions.resolved {
+            if inbox.unread.first(where: { $0.id == entry.id })?.revision == entry.revision {
+                inbox.markRead(id: entry.id)
+            }
+        }
+        for answer in arrivals {
             notifier.notify(taskID: answer.id,
                             source: SourceStyle.label(answer.source),
                             title: answer.title)

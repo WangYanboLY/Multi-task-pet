@@ -63,6 +63,64 @@ class CollectorTests(unittest.TestCase):
             state.close()
             history.close()
 
+    def test_codex_omits_subagents_before_limits_and_exports_old_child_ids(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            home = root / "codex"
+            home.mkdir()
+            state = sqlite3.connect(home / "state_5.sqlite")
+            state.execute("CREATE TABLE threads (id TEXT, cwd TEXT, title TEXT, name TEXT, agent_nickname TEXT, agent_path TEXT, updated_at INTEGER, updated_at_ms INTEGER, recency_at_ms INTEGER, archived INTEGER)")
+            state.execute("CREATE TABLE thread_spawn_edges (parent_thread_id TEXT, child_thread_id TEXT)")
+            history = sqlite3.connect(home / "thread_history_1.sqlite")
+            history.execute("CREATE TABLE thread_turns (thread_id TEXT, status TEXT, started_at INTEGER, completed_at INTEGER, rollout_ordinal INTEGER)")
+            current = now_ms()
+
+            def add_thread(identifier, updated, title, agent_path=None, edge=False, with_turn=True):
+                state.execute("INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?)",
+                              (identifier, directory, title, None, None, agent_path,
+                               updated // 1000, updated, updated, 0))
+                if edge:
+                    state.execute("INSERT INTO thread_spawn_edges VALUES (?,?)", ("top-0", identifier))
+                if with_turn:
+                    history.execute("INSERT INTO thread_turns VALUES (?,?,?,?,?)",
+                                    (identifier, "completed", (updated - 1000) // 1000,
+                                     updated // 1000, 1))
+
+            # More than the SQL row limit are newer child threads. The two
+            # independent child signals are both represented, including a
+            # child with a normal-looking title.
+            for index in range(360):
+                identifier = "child-{}".format(index)
+                add_thread(identifier, current - (index + 1) * 1000,
+                           "Named task" if index == 0 else None,
+                           agent_path="/root/child" if index % 2 else None,
+                           edge=index % 2 == 0)
+            for index in range(10):
+                add_thread("top-{}".format(index), current - 600_000 - index * 1000,
+                           None if index == 0 else "Top task {}".format(index))
+            add_thread("old-child", current - 2 * 86400_000, "Older child",
+                       agent_path="/root/old", with_turn=False)
+            state.commit()
+            history.commit()
+            state.close()
+            history.close()
+
+            ignored = set()
+            tasks = collect_codex(home, current, ignored)
+            self.assertEqual([item["id"] for item in tasks],
+                             ["codex:top-{}".format(index) for index in range(8)])
+            self.assertEqual(tasks[0]["title"], "Codex 任务")
+            self.assertEqual(len(ignored), 361)
+            self.assertIn("codex:child-0", ignored)
+            self.assertIn("codex:child-1", ignored)
+            self.assertIn("codex:old-child", ignored)
+
+            snapshot = Collector(home=root / "out", codex_home=home,
+                                 claude_home=root / "claude", desktop_home=root / "desktop").snapshot()
+            self.assertEqual(snapshot["ignored_task_ids"], sorted(ignored))
+            self.assertEqual(json.loads((root / "out" / "tasks.json").read_text())["ignored_task_ids"],
+                             sorted(ignored))
+
     def test_claude_uses_live_pid_and_does_not_call_idle_complete(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -77,8 +135,13 @@ class CollectorTests(unittest.TestCase):
                 "pid": os.getpid(), "sessionId": "desktop", "cwd": directory,
                 "entrypoint": "claude-desktop", "status": "busy", "statusUpdatedAt": timestamp,
             }))
+            child_dir = root / "claude" / "projects" / "work" / "live" / "subagents"
+            child_dir.mkdir(parents=True)
+            (child_dir / "agent-child.meta.json").write_text(json.dumps({"description": "Child work"}))
+            (child_dir / "agent-child.jsonl").write_text("{}\n")
             tasks = collect_claude(root / "claude", root / "desktop", timestamp)
             self.assertEqual(len(tasks), 2)
+            self.assertTrue(all(not task["id"].startswith("claude-agent:") for task in tasks))
             by_id = {task["id"]: task for task in tasks}
             self.assertEqual(by_id["claude-code:live"]["source"], "Claude Code")
             self.assertEqual(by_id["claude-code:live"]["status"], "idle")

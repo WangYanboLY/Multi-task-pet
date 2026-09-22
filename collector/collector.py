@@ -87,9 +87,18 @@ def read_sqlite(path, query, params=()):
             connection.close()
 
 
-def collect_codex(codex_home, timestamp):
+def collect_codex(codex_home, timestamp, ignored_ids=None):
     state = codex_home / "state_5.sqlite"
     history = codex_home / "thread_history_1.sqlite"
+    # Subagent threads may remain in the pet's local read/handled state after
+    # they fall outside the recent-task window. Export all known child IDs so
+    # the app can discard those stale entries as well.
+    edges = read_sqlite(state, "SELECT child_thread_id FROM thread_spawn_edges")
+    excluded = {edge["child_thread_id"] for edge in edges if edge["child_thread_id"]}
+    paths = read_sqlite(state, "SELECT id FROM threads WHERE agent_path IS NOT NULL AND agent_path <> ''")
+    excluded.update(row["id"] for row in paths if row["id"])
+    if ignored_ids is not None:
+        ignored_ids.update("codex:" + identifier for identifier in excluded)
     cutoff_ms = timestamp - CODEX_RECENT_SECONDS * 1000
     rows = read_sqlite(
         state,
@@ -97,14 +106,17 @@ def collect_codex(codex_home, timestamp):
                   updated_at, updated_at_ms, recency_at_ms
              FROM threads
             WHERE archived = 0 AND COALESCE(updated_at_ms, updated_at * 1000) >= ?
+              AND COALESCE(agent_path, '') = ''
+              AND NOT EXISTS (
+                  SELECT 1 FROM thread_spawn_edges AS spawn
+                   WHERE spawn.child_thread_id = threads.id
+              )
             ORDER BY COALESCE(updated_at_ms, updated_at * 1000) DESC
             LIMIT 350""",
         (cutoff_ms,),
     )
     if not rows:
         return []
-    edges = read_sqlite(state, "SELECT parent_thread_id, child_thread_id FROM thread_spawn_edges")
-    children = {edge["child_thread_id"]: edge["parent_thread_id"] for edge in edges}
     turns = read_sqlite(
         history,
         """SELECT thread_id, status, started_at, completed_at, rollout_ordinal
@@ -119,6 +131,8 @@ def collect_codex(codex_home, timestamp):
     recent = []
     for row in rows:
         thread_id = row["id"]
+        if thread_id in excluded:
+            continue
         turn = latest_turn.get(thread_id)
         if not turn:
             continue
@@ -142,9 +156,6 @@ def collect_codex(codex_home, timestamp):
             status, detail = "unknown", "这一轮状态未识别"
         family_id, family = project_family(row["cwd"], "Codex")
         title = clean_title(row["name"] or row["title"], "Codex 任务")
-        if thread_id in children or row["agent_path"]:
-            nickname = clean_title(row["agent_nickname"], "子 agent")
-            detail = "{} · {}".format(nickname, detail)
         item = {
             "id": "codex:" + thread_id,
             "source": "Codex",
@@ -320,30 +331,6 @@ def collect_claude(claude_home, desktop_home, timestamp):
             if progress:
                 tasks[-1]["completed"], tasks[-1]["total"] = progress
                 tasks[-1]["detail"] += " · Task 清单进度"
-        # Claude subagents have no reliable terminal status in their metadata.
-        # Show only those with recent transcript activity, and say what was seen.
-        parent_files = list((claude_home / "projects").glob("*/{}".format(session_id)))
-        for parent_dir in parent_files:
-            for meta_path in (parent_dir / "subagents").glob("agent-*.meta.json"):
-                transcript = meta_path.with_name(meta_path.name.replace(".meta.json", ".jsonl"))
-                if not transcript.is_file():
-                    continue
-                touched_ms = int(transcript.stat().st_mtime * 1000)
-                if timestamp - touched_ms > 30 * 60 * 1000:
-                    continue
-                meta = safe_json(meta_path) or {}
-                child_name = clean_title(meta.get("description"), meta_path.stem.replace(".meta", ""))
-                child_status = "working" if timestamp - touched_ms <= 90 * 1000 and status == "working" else "unknown"
-                tasks.append({
-                    "id": "claude-agent:{}:{}".format(session_id, meta_path.stem),
-                    "source": source,
-                    "family_id": family_id,
-                    "family": family,
-                    "title": child_name,
-                    "status": child_status,
-                    "updated_at": iso_from_ms(touched_ms),
-                    "detail": "子 agent · 最近活动；没有明确完成信号",
-                })
     return tasks
 
 
@@ -421,7 +408,8 @@ class Collector:
 
     def snapshot(self):
         timestamp = now_ms()
-        tasks = collect_codex(self.codex_home, timestamp)
+        ignored_ids = set()
+        tasks = collect_codex(self.codex_home, timestamp, ignored_ids)
         tasks.extend(collect_claude(self.claude_home, self.desktop_home, timestamp))
         with self.lock:
             for key, event in list(self.browser.items()):
@@ -436,7 +424,8 @@ class Collector:
                 tasks.append(copy)
         order = {"working": 0, "waiting": 1, "failed": 2, "unknown": 3, "idle": 4, "done": 5}
         tasks.sort(key=lambda task: (order.get(task["status"], 6), task["family"], task["title"]))
-        result = {"generated_at": iso_from_ms(timestamp), "tasks": tasks}
+        result = {"generated_at": iso_from_ms(timestamp), "tasks": tasks,
+                  "ignored_task_ids": sorted(ignored_ids)}
         atomic_json(self.home / "tasks.json", result)
         return result
 

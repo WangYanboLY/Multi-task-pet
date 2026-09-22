@@ -32,8 +32,8 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>Agent Pet</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.2.0</string>
-  <key>CFBundleVersion</key><string>2</string>
+  <key>CFBundleShortVersionString</key><string>0.3.0</string>
+  <key>CFBundleVersion</key><string>3</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
@@ -48,6 +48,7 @@ MACOSX_DEPLOYMENT_TARGET=13.0 swiftc \
   "$SCRIPT_DIR/AgentPet.swift" \
   "$SCRIPT_DIR/AnswerInbox.swift" \
   "$SCRIPT_DIR/LocalNotifier.swift" \
+  "$SCRIPT_DIR/ManualResolutionStore.swift" \
   "$SCRIPT_DIR/ThoughtStore.swift" \
   -o "$CONTENTS/MacOS/AgentPet"
 

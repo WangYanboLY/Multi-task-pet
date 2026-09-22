@@ -161,6 +161,16 @@ final class AnswerInbox: ObservableObject {
         persist()
     }
 
+    /// Remove conversations that the collector has confirmed are hidden subagents.
+    func discard(ids: Set<String>) {
+        guard !ids.isEmpty else { return }
+        let oldUnreadCount = unread.count
+        let oldCursorCount = cursors.count
+        unread.removeAll { ids.contains($0.id) }
+        cursors = cursors.filter { !ids.contains($0.key) }
+        if unread.count != oldUnreadCount || cursors.count != oldCursorCount { persist() }
+    }
+
     private func isActive(_ status: String) -> Bool {
         status == "working" || status == "waiting"
     }
