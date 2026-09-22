@@ -28,8 +28,8 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>Agent Pet</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>0.2.0</string>
+  <key>CFBundleVersion</key><string>2</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
@@ -40,8 +40,11 @@ PLIST
 MACOSX_DEPLOYMENT_TARGET=13.0 swiftc \
   -target "$(uname -m)-apple-macosx13.0" \
   -parse-as-library -O \
-  -framework AppKit -framework SwiftUI \
+  -framework AppKit -framework SwiftUI -framework UserNotifications \
   "$SCRIPT_DIR/AgentPet.swift" \
+  "$SCRIPT_DIR/AnswerInbox.swift" \
+  "$SCRIPT_DIR/LocalNotifier.swift" \
+  "$SCRIPT_DIR/ThoughtStore.swift" \
   -o "$CONTENTS/MacOS/AgentPet"
 
 cp -X "$COLLECTOR_SOURCE" "$CONTENTS/Resources/collector.py"
@@ -58,6 +61,6 @@ codesign --verify --deep --strict "$APP_BUNDLE"
 mkdir -p "$SCRIPT_DIR/dist"
 rm -rf "$OUTPUT_BUNDLE"
 ditto "$APP_BUNDLE" "$OUTPUT_BUNDLE"
-xattr -d com.apple.FinderInfo "$OUTPUT_BUNDLE" 2>/dev/null || true
+xattr -cr "$OUTPUT_BUNDLE"
 codesign --verify --deep --strict "$OUTPUT_BUNDLE"
 print "Built $OUTPUT_BUNDLE"

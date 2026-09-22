@@ -8,6 +8,8 @@ private enum Palette {
     static let card = Color(red: 0.12, green: 0.15, blue: 0.23)
     static let line = Color.white.opacity(0.09)
     static let mint = Color(red: 0.42, green: 0.92, blue: 0.77)
+    static let amber = Color(red: 1.00, green: 0.79, blue: 0.36)
+    static let sky = Color(red: 0.51, green: 0.76, blue: 1.00)
 }
 
 private struct TaskSnapshot: Decodable {
@@ -27,10 +29,19 @@ private struct AgentTask: Decodable, Identifiable {
     let completed: Int?
     let total: Int?
     let url: String?
+    let answerRevision: String?
 
     var normalizedStatus: String { status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
     var isDone: Bool { normalizedStatus == "done" }
     var isActive: Bool { ["working", "waiting"].contains(normalizedStatus) }
+    func belongs(to filter: ConversationFilter, now: Date = Date(), calendar: Calendar = .current) -> Bool {
+        guard !isDone else { return false }
+        let updatedToday = TimeText.date(updatedAt).map { date in
+            date <= now && calendar.isDate(date, inSameDayAs: now)
+        } ?? false
+        if filter == .active { return isActive || updatedToday }
+        return normalizedStatus == "waiting" || normalizedStatus == "failed"
+    }
     var familyKey: String { familyId.isEmpty ? "\(source):\(id)" : familyId }
     var familyName: String { family.isEmpty ? title : family }
 
@@ -40,10 +51,7 @@ private struct AgentTask: Decodable, Identifiable {
     }
 
     var destination: URL? {
-        guard let url, let parsed = URL(string: url),
-              let scheme = parsed.scheme?.lowercased(),
-              ["https", "http", "codex"].contains(scheme) else { return nil }
-        return parsed
+        DestinationURL.forTask(id: id, source: source, raw: url)
     }
 }
 
@@ -59,8 +67,6 @@ private struct TaskFamily: Identifiable {
     var failedCount: Int { tasks.filter { $0.normalizedStatus == "failed" }.count }
     var doneCount: Int { tasks.filter(\.isDone).count }
     var unknownCount: Int { tasks.filter { !["working", "waiting", "idle", "failed", "done"].contains($0.normalizedStatus) }.count }
-    var hasActiveTask: Bool { tasks.contains(where: \.isActive) }
-    var hasPendingTask: Bool { tasks.contains { !$0.isActive && !$0.isDone } }
     var statusSummary: String {
         var parts: [String] = []
         if workingCount > 0 { parts.append("\(workingCount) 进行中") }
@@ -76,7 +82,6 @@ private struct TaskFamily: Identifiable {
 private enum SourceCategory: String, CaseIterable, Identifiable {
     case gpt
     case claude
-    case claudeCode
 
     var id: String { rawValue }
 
@@ -84,24 +89,31 @@ private enum SourceCategory: String, CaseIterable, Identifiable {
         switch self {
         case .gpt: return "GPT"
         case .claude: return "Claude"
-        case .claudeCode: return "Claude Code"
         }
     }
 
     func includes(_ source: String) -> Bool {
         switch self {
         case .gpt: return ["codex", "chatgpt", "gpt"].contains(SourceStyle.normalized(source))
-        case .claude: return SourceStyle.normalized(source) == "claude"
-        case .claudeCode: return ["claude_code", "claudecode"].contains(SourceStyle.normalized(source))
+        case .claude: return ["claude", "claude_code", "claudecode"].contains(SourceStyle.normalized(source))
         }
     }
+}
+
+private enum ConversationFilter: String, CaseIterable, Identifiable {
+    case active
+    case needsHandling
+
+    var id: String { rawValue }
+    var title: String { self == .active ? "活跃对话" : "需要处理" }
+    var emptyMessage: String { self == .active ? "当前没有活跃对话" : "当前没有需要处理的对话" }
+    var tint: Color { self == .active ? Palette.mint : StatusStyle.color("failed") }
 }
 
 @MainActor
 private final class TaskStore: ObservableObject {
     @Published private(set) var tasks: [AgentTask] = []
     @Published private(set) var generatedAt: String?
-    @Published private(set) var lastCheckedAt: Date?
     @Published private(set) var message: String = "正在读取任务…"
     @Published private(set) var hasSnapshot = false
 
@@ -109,6 +121,7 @@ private final class TaskStore: ObservableObject {
         .appendingPathComponent(".agent-pet/tasks.json")
 
     private var timer: Timer?
+    var onSnapshot: (([AgentTask]) -> Void)?
 
     init() {
         reload()
@@ -118,7 +131,6 @@ private final class TaskStore: ObservableObject {
     }
 
     func reload() {
-        lastCheckedAt = Date()
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
             tasks = []
             generatedAt = nil
@@ -135,6 +147,7 @@ private final class TaskStore: ObservableObject {
             generatedAt = snapshot.generatedAt
             hasSnapshot = true
             message = snapshot.tasks.isEmpty ? "目前没有观察到任务。" : ""
+            onSnapshot?(snapshot.tasks)
         } catch {
             // Keep the last good snapshot if a writer is replacing the file.
             message = "本次读取失败：\(error.localizedDescription)"
@@ -152,41 +165,33 @@ private final class TaskStore: ObservableObject {
         }.sorted { $0.newestUpdate > $1.newestUpdate }
     }
 
-    var activeFamilies: [TaskFamily] { families(for: tasks).filter(\.hasActiveTask) }
-    var pendingFamilies: [TaskFamily] { families(for: tasks).filter { !$0.hasActiveTask && $0.hasPendingTask } }
-
     func tasks(in category: SourceCategory) -> [AgentTask] {
         tasks.filter { category.includes($0.source) }
     }
 
-    func taskCount(in category: SourceCategory) -> Int { tasks(in: category).count }
+    func tasks(in category: SourceCategory, filter: ConversationFilter) -> [AgentTask] {
+        let now = Date()
+        let calendar = Calendar.current
+        return tasks(in: category).filter { $0.belongs(to: filter, now: now, calendar: calendar) }
+    }
+    func count(in category: SourceCategory, filter: ConversationFilter) -> Int {
+        tasks(in: category, filter: filter).count
+    }
+    func visibleCount(in category: SourceCategory) -> Int {
+        tasks(in: category).filter { !$0.isDone }.count
+    }
     func activeCount(in category: SourceCategory) -> Int { tasks(in: category).filter(\.isActive).count }
-    func pendingCount(in category: SourceCategory) -> Int {
-        tasks(in: category).filter { !$0.isActive && !$0.isDone }.count
-    }
-    func failedCount(in category: SourceCategory) -> Int {
-        tasks(in: category).filter { $0.normalizedStatus == "failed" }.count
-    }
-    func activeFamilies(in category: SourceCategory) -> [TaskFamily] {
-        families(for: tasks(in: category)).filter(\.hasActiveTask)
-    }
-    func pendingFamilies(in category: SourceCategory) -> [TaskFamily] {
-        families(for: tasks(in: category)).filter { !$0.hasActiveTask && $0.hasPendingTask }
-    }
-    func recentDone(in category: SourceCategory) -> [AgentTask] {
-        Array(tasks(in: category).filter(\.isDone).sorted { $0.updatedAt > $1.updatedAt }.prefix(8))
+    func families(in category: SourceCategory, filter: ConversationFilter) -> [TaskFamily] {
+        families(for: tasks(in: category, filter: filter))
     }
     var uncategorizedCount: Int {
-        tasks.filter { task in !SourceCategory.allCases.contains { $0.includes(task.source) } }.count
-    }
-
-    var recentDone: [AgentTask] {
-        Array(tasks.filter(\.isDone).sorted { $0.updatedAt > $1.updatedAt }.prefix(8))
+        tasks.filter { task in
+            !task.isDone && !SourceCategory.allCases.contains { $0.includes(task.source) }
+        }.count
     }
 
     var activeCount: Int { tasks.filter(\.isActive).count }
-    var pendingCount: Int { tasks.filter { !$0.isActive && !$0.isDone }.count }
-    var failedCount: Int { tasks.filter { $0.normalizedStatus == "failed" }.count }
+    var activeFamilyCount: Int { families(for: tasks.filter(\.isActive)).count }
     var isStale: Bool {
         guard hasSnapshot else { return false }
         guard let date = TimeText.date(generatedAt) else { return true }
@@ -267,8 +272,23 @@ private enum SourceStyle {
     }
 }
 
+private enum DestinationURL {
+    static func forTask(id: String, source: String, raw: String?) -> URL? {
+        if let raw, let parsed = URL(string: raw),
+           let scheme = parsed.scheme?.lowercased(),
+           ["https", "http", "codex"].contains(scheme) {
+            return parsed
+        }
+        guard SourceStyle.normalized(source) == "codex", id.hasPrefix("codex:") else { return nil }
+        let threadID = String(id.dropFirst("codex:".count))
+        guard UUID(uuidString: threadID) != nil else { return nil }
+        return URL(string: "codex://threads/\(threadID)")
+    }
+}
+
 private struct PetView: View {
     @ObservedObject var store: TaskStore
+    @ObservedObject var inbox: AnswerInbox
     let onHover: (Bool) -> Void
 
     var body: some View {
@@ -316,21 +336,30 @@ private struct PetView: View {
                 .foregroundStyle(Color(red: 0.07, green: 0.22, blue: 0.31))
                 .offset(y: 13)
 
-            Circle()
-                .fill(store.isStale ? StatusStyle.color("waiting") : (store.failedCount > 0 ? StatusStyle.color("failed") : (store.activeCount > 0 ? Palette.mint : Palette.muted)))
-                .frame(width: 24, height: 24)
-                .overlay {
-                    Text(!store.hasSnapshot || store.isStale ? "?" : (store.failedCount > 0 ? "!" : (store.activeCount > 9 ? "9+" : "\(store.activeCount)")))
-                        .font(.system(size: 11, weight: .bold, design: .rounded))
-                        .foregroundStyle(Color(red: 0.06, green: 0.16, blue: 0.23))
-                }
-                .overlay(Circle().stroke(Color.white.opacity(0.9), lineWidth: 2))
-                .offset(x: 40, y: -36)
+            HStack(spacing: 3) {
+                metric(store.activeCount, color: Palette.mint, label: "正在运行的对话")
+                metric(inbox.unreadCount, color: Palette.amber, label: "未查看的新回答")
+                metric(store.activeFamilyCount, color: Palette.sky, label: "活跃对话族")
+            }
+            .offset(y: -45)
         }
         .frame(width: 118, height: 126)
         .contentShape(Rectangle())
         .onHover(perform: onHover)
-        .accessibilityLabel(store.isStale ? "Agent Pet，采集器未更新，悬停查看详情" : "Agent Pet，\(store.activeCount) 个活跃任务，悬停查看详情")
+        .accessibilityLabel("Agent Pet，\(store.activeCount) 个运行中的对话，\(inbox.unreadCount) 个未查看的新回答，\(store.activeFamilyCount) 个活跃对话族，悬停查看详情")
+    }
+
+    private func metric(_ count: Int, color: Color, label: String) -> some View {
+        Circle()
+            .fill(color)
+            .frame(width: 25, height: 25)
+            .overlay {
+                Text(count > 9 ? "9+" : "\(count)")
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .foregroundStyle(Color(red: 0.06, green: 0.16, blue: 0.23))
+            }
+            .overlay(Circle().stroke(Color.white.opacity(0.92), lineWidth: 1.5))
+            .help("\(label)：\(count)")
     }
 }
 
@@ -362,18 +391,24 @@ private struct SourcePill: View {
 
 private struct TaskRow: View {
     let task: AgentTask
+    let isUnread: Bool
+    let onOpen: (AgentTask) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(alignment: .top, spacing: 8) {
+                if isUnread {
+                    Circle().fill(Palette.amber).frame(width: 7, height: 7).padding(.top, 4)
+                        .accessibilityLabel("未查看的新回答")
+                }
                 Text(task.title.isEmpty ? "未命名对话" : task.title)
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Palette.ink)
                     .lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                if let destination = task.destination {
+                if task.destination != nil {
                     Button {
-                        NSWorkspace.shared.open(destination)
+                        onOpen(task)
                     } label: {
                         Image(systemName: "arrow.up.right.square")
                             .font(.system(size: 12, weight: .medium))
@@ -410,25 +445,44 @@ private struct TaskRow: View {
 
 private struct FamilyCard: View {
     let family: TaskFamily
+    let unreadIDs: Set<String>
+    let onOpen: (AgentTask) -> Void
+    @State private var expanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(family.name)
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundStyle(Palette.ink)
-                    .lineLimit(2)
-                Spacer(minLength: 8)
-                Text("\(family.tasks.count) 项")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(Palette.muted)
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) { expanded.toggle() }
+            } label: {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(Palette.mint)
+                        Text(family.name)
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(Palette.ink)
+                            .lineLimit(2)
+                        Spacer(minLength: 8)
+                        Text("\(family.tasks.count) 项")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(Palette.muted)
+                    }
+                    Text(family.statusSummary)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(Palette.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            Text(family.statusSummary)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(Palette.muted)
-                .fixedSize(horizontal: false, vertical: true)
-            ForEach(Array(family.tasks.enumerated()), id: \.offset) { _, task in
-                TaskRow(task: task)
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(family.name)，\(family.tasks.count) 项")
+            .accessibilityValue(expanded ? "已展开" : "已折叠")
+
+            if expanded {
+                ForEach(family.tasks) { task in
+                    TaskRow(task: task, isUnread: unreadIDs.contains(task.id), onOpen: onOpen)
+                }
             }
         }
         .padding(12)
@@ -437,12 +491,30 @@ private struct FamilyCard: View {
     }
 }
 
+@MainActor
+private final class DashboardRoute: ObservableObject {
+    @Published private(set) var version = 0
+    private(set) var source = ""
+
+    func showNeedsHandling(source: String) {
+        self.source = source
+        version += 1
+    }
+}
+
 private struct DashboardView: View {
     @ObservedObject var store: TaskStore
+    @ObservedObject var inbox: AnswerInbox
+    @ObservedObject var thoughtStore: ThoughtStore
+    @ObservedObject var route: DashboardRoute
     let onClose: () -> Void
     let onQuit: () -> Void
     @State private var selectedCategory: SourceCategory = .gpt
+    @State private var selectedFilter: ConversationFilter = .active
     @State private var categoryInitialized = false
+    @State private var thoughtDraft = ""
+    @State private var thoughtFeedback = ""
+    @State private var showThoughts = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -474,22 +546,16 @@ private struct DashboardView: View {
             .padding(.bottom, 12)
 
             categoryTabs
+                .padding(.bottom, 9)
+
+            conversationTabs
+                .padding(.bottom, 7)
+            Text(selectedFilter == .active
+                 ? "按本机日期：今天更新的待后续记录也算活跃"
+                 : "等待你操作、执行失败，或有尚未查看的新回答")
+                .font(.system(size: 10))
+                .foregroundStyle(Palette.muted)
                 .padding(.bottom, 12)
-
-            HStack(spacing: 8) {
-                summaryNumber("\(store.activeFamilies(in: selectedCategory).count)", "活跃任务族", Palette.mint)
-                summaryNumber("\(store.activeCount(in: selectedCategory))", "活跃对话", Color(red: 0.46, green: 0.84, blue: 0.95))
-                summaryNumber("\(store.pendingCount(in: selectedCategory))", "待后续 / 需处理", store.failedCount(in: selectedCategory) > 0 ? StatusStyle.color("failed") : StatusStyle.color("waiting"))
-            }
-            .padding(.bottom, 12)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text("数据生成：\(TimeText.display(store.generatedAt))")
-                Text("上次检查：\(store.lastCheckedAt.map(TimeText.display) ?? "尚未检查")")
-            }
-            .font(.system(size: 10, design: .monospaced))
-            .foregroundStyle(Palette.muted)
-            .padding(.bottom, 12)
 
             if store.isStale {
                 HStack(spacing: 7) {
@@ -522,45 +588,23 @@ private struct DashboardView: View {
                         .background(Palette.card, in: RoundedRectangle(cornerRadius: 12))
                     }
 
-                    if store.hasSnapshot && store.taskCount(in: selectedCategory) == 0 {
+                    if store.hasSnapshot && store.visibleCount(in: selectedCategory) == 0 && unreadAnswers(in: selectedCategory).isEmpty {
                         emptyLabel("\(selectedCategory.title) 目前没有可观察到的任务")
                     }
                     if store.uncategorizedCount > 0 {
-                        emptyLabel("另有 \(store.uncategorizedCount) 条来源未识别的记录，暂未归入这三个分类。")
+                        emptyLabel("另有 \(store.uncategorizedCount) 条来源未识别的记录，暂未归入这两个来源。")
                     }
 
-                    sectionTitle("活跃任务族", count: store.activeFamilies(in: selectedCategory).count)
-                    if store.activeFamilies(in: selectedCategory).isEmpty {
-                        emptyLabel("当前没有活跃任务")
-                    } else {
-                        ForEach(store.activeFamilies(in: selectedCategory)) { family in
-                            FamilyCard(family: family)
-                        }
-                    }
-
-                    sectionTitle("待后续与需处理", count: store.pendingFamilies(in: selectedCategory).count)
-                    if store.pendingFamilies(in: selectedCategory).isEmpty {
-                        emptyLabel("暂无待后续记录")
-                    } else {
-                        ForEach(store.pendingFamilies(in: selectedCategory)) { family in
-                            FamilyCard(family: family)
-                        }
-                    }
-
-                    sectionTitle("最近完成", count: store.recentDone(in: selectedCategory).count)
-                    if store.recentDone(in: selectedCategory).isEmpty {
-                        emptyLabel("暂无已完成记录")
-                    } else {
-                        ForEach(Array(store.recentDone(in: selectedCategory).enumerated()), id: \.offset) { _, task in
-                            TaskRow(task: task)
-                        }
-                    }
+                    conversationContent
+                    thoughtsHistory
                 }
                 .padding(.vertical, 13)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .scrollIndicators(.hidden)
 
+            Rectangle().fill(Palette.line).frame(height: 1)
+            thoughtComposer
             Rectangle().fill(Palette.line).frame(height: 1)
             HStack(alignment: .top, spacing: 8) {
                 Text("网页聊天仅追踪已打开并安装浏览器伴侣的标签；普通 Claude / ChatGPT 桌面聊天暂无线索。")
@@ -578,20 +622,177 @@ private struct DashboardView: View {
                 .fixedSize()
             }
             .padding(.top, 9)
-            Text(store.fileURL.path)
-                .font(.system(size: 9, design: .monospaced))
-                .foregroundStyle(Palette.muted)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .padding(.top, 9)
         }
         .padding(17)
         .frame(width: 420, height: 600)
         .background(Palette.panel, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(Color.white.opacity(0.13), lineWidth: 1))
         .preferredColorScheme(.dark)
-        .onAppear { chooseInitialCategoryIfNeeded() }
+        .onAppear {
+            chooseInitialCategoryIfNeeded()
+            if route.version > 0 { applyRoute() }
+        }
         .onChange(of: store.generatedAt) { _ in chooseInitialCategoryIfNeeded() }
+        .onChange(of: route.version) { _ in applyRoute() }
+    }
+
+    @ViewBuilder
+    private var thoughtsHistory: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.18)) { showThoughts.toggle() }
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: showThoughts ? "chevron.down" : "chevron.right")
+                Text("随手想法").font(.system(size: 12, weight: .semibold))
+                Text("\(thoughtStore.thoughts.count)").font(.system(size: 10))
+                Spacer()
+            }
+            .foregroundStyle(Palette.muted)
+        }
+        .buttonStyle(.plain)
+        if showThoughts {
+            if thoughtStore.thoughts.isEmpty {
+                emptyLabel("还没有保存想法")
+            } else {
+                ForEach(thoughtStore.thoughts.prefix(20)) { thought in
+                    Text(thought.text)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Palette.ink)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(10)
+                        .background(Palette.card, in: RoundedRectangle(cornerRadius: 11))
+                }
+            }
+        }
+    }
+
+    private var thoughtComposer: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .bottom, spacing: 8) {
+                TextField("随手记下一个想法…", text: $thoughtDraft, axis: .vertical)
+                    .font(.system(size: 12))
+                    .lineLimit(1...3)
+                    .textFieldStyle(.plain)
+                    .padding(9)
+                    .background(Palette.card, in: RoundedRectangle(cornerRadius: 10))
+                Button(action: saveThought) {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 24))
+                        .foregroundStyle(Palette.mint)
+                }
+                .buttonStyle(.plain)
+                .disabled(thoughtDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .help("保存想法")
+            }
+            if !thoughtFeedback.isEmpty {
+                Text(thoughtFeedback)
+                    .font(.system(size: 10))
+                    .foregroundStyle(Palette.muted)
+            }
+        }
+        .padding(.vertical, 9)
+    }
+
+    private func saveThought() {
+        do {
+            try thoughtStore.save(thoughtDraft)
+            thoughtDraft = ""
+            thoughtFeedback = "已保存在本机"
+        } catch {
+            thoughtFeedback = error.localizedDescription
+        }
+    }
+
+    @ViewBuilder
+    private var conversationContent: some View {
+        if selectedFilter == .active {
+            sectionTitle("活跃对话", count: store.count(in: selectedCategory, filter: .active))
+            if store.families(in: selectedCategory, filter: .active).isEmpty {
+                emptyLabel(ConversationFilter.active.emptyMessage)
+            } else {
+                ForEach(store.families(in: selectedCategory, filter: .active)) { family in
+                    FamilyCard(family: family, unreadIDs: unreadIDs, onOpen: openTask)
+                }
+            }
+        } else {
+            let pending = store.families(in: selectedCategory, filter: .needsHandling)
+            let unread = unreadAnswers(in: selectedCategory)
+            if pending.isEmpty && unread.isEmpty {
+                emptyLabel(ConversationFilter.needsHandling.emptyMessage)
+            } else {
+                sectionTitle("待你操作", count: store.count(in: selectedCategory, filter: .needsHandling))
+                ForEach(pending) { family in
+                    FamilyCard(family: family, unreadIDs: unreadIDs, onOpen: openTask)
+                }
+                sectionTitle("未查看的新回答", count: unread.count)
+                ForEach(unread) { answer in
+                    unreadRow(answer)
+                }
+            }
+        }
+    }
+
+    private var unreadIDs: Set<String> { Set(inbox.unread.map(\.id)) }
+
+    private func unreadAnswers(in category: SourceCategory) -> [UnreadAnswer] {
+        inbox.unread.filter { category.includes($0.source) }
+    }
+
+    private func filterCount(in category: SourceCategory) -> Int {
+        if selectedFilter == .active { return store.count(in: category, filter: .active) }
+        return filterCountForNeeds(in: category)
+    }
+
+    private func filterCountForNeeds(in category: SourceCategory) -> Int {
+        let pending = store.tasks(in: category, filter: .needsHandling).map(\.id)
+        let unread = unreadAnswers(in: category).map(\.id)
+        return Set(pending + unread).count
+    }
+
+    private func unreadRow(_ answer: UnreadAnswer) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 6) {
+                Circle().fill(Palette.amber).frame(width: 7, height: 7)
+                Text(answer.title.isEmpty ? "未命名对话" : answer.title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Palette.ink)
+                    .lineLimit(2)
+                Spacer()
+            }
+            HStack(spacing: 8) {
+                SourcePill(source: answer.source)
+                Text("新回答：\(TimeText.display(answer.completedAt))")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Palette.muted)
+                Spacer()
+            }
+            HStack(spacing: 11) {
+                if destination(for: answer) != nil {
+                    Button("打开对话") { openUnread(answer) }
+                }
+                Button("标为已读") { inbox.markRead(id: answer.id) }
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(Palette.mint)
+        }
+        .padding(11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Palette.card, in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func destination(for answer: UnreadAnswer) -> URL? {
+        DestinationURL.forTask(id: answer.id, source: answer.source, raw: answer.url)
+    }
+
+    private func openUnread(_ answer: UnreadAnswer) {
+        guard let destination = destination(for: answer) else { return }
+        if NSWorkspace.shared.open(destination) { inbox.markRead(id: answer.id) }
+    }
+
+    private func openTask(_ task: AgentTask) {
+        guard let destination = task.destination else { return }
+        if NSWorkspace.shared.open(destination) { inbox.markRead(id: task.id) }
     }
 
     private var categoryTabs: some View {
@@ -607,7 +808,7 @@ private struct DashboardView: View {
                             .font(.system(size: 11, weight: selected ? .bold : .medium))
                             .lineLimit(1)
                             .minimumScaleFactor(0.8)
-                        Text("\(store.taskCount(in: category))")
+                        Text("\(filterCount(in: category))")
                             .font(.system(size: 10, weight: .bold, design: .rounded))
                             .padding(.horizontal, 5)
                             .padding(.vertical, 2)
@@ -630,10 +831,43 @@ private struct DashboardView: View {
         .accessibilityLabel("任务来源分类")
     }
 
+    private var conversationTabs: some View {
+        HStack(spacing: 4) {
+            ForEach(ConversationFilter.allCases) { filter in
+                let selected = selectedFilter == filter
+                Button {
+                    selectedFilter = filter
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(filter.title)
+                            .font(.system(size: 12, weight: selected ? .bold : .medium))
+                        Text("\(filter == .active ? store.count(in: selectedCategory, filter: .active) : filterCountForNeeds(in: selectedCategory))")
+                            .font(.system(size: 10, weight: .bold, design: .rounded))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.white.opacity(selected ? 0.16 : 0.07), in: Capsule())
+                    }
+                    .foregroundStyle(selected ? Palette.ink : Palette.muted)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(selected ? filter.tint.opacity(0.16) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(selected ? filter.tint.opacity(0.45) : Color.clear, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .help("查看\(filter.title)")
+            }
+        }
+        .padding(4)
+        .background(Palette.card, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .accessibilityLabel("对话状态筛选")
+    }
+
     private func chooseInitialCategoryIfNeeded() {
         guard !categoryInitialized, store.hasSnapshot else { return }
         var best = SourceCategory.gpt
-        for candidate in [SourceCategory.claude, .claudeCode] {
+        for candidate in [SourceCategory.claude] {
             if store.activeCount(in: candidate) > store.activeCount(in: best) {
                 best = candidate
             }
@@ -642,14 +876,12 @@ private struct DashboardView: View {
         categoryInitialized = true
     }
 
-    private func summaryNumber(_ value: String, _ label: String, _ color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(value).font(.system(size: 20, weight: .bold, design: .rounded)).foregroundStyle(color)
-            Text(label).font(.system(size: 10, weight: .medium)).foregroundStyle(Palette.muted)
+    private func applyRoute() {
+        if let category = SourceCategory.allCases.first(where: { $0.includes(route.source) }) {
+            selectedCategory = category
+            categoryInitialized = true
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(9)
-        .background(Palette.card, in: RoundedRectangle(cornerRadius: 11))
+        selectedFilter = .needsHandling
     }
 
     private func sectionTitle(_ title: String, count: Int) -> some View {
@@ -709,6 +941,10 @@ private final class FloatingPanel: NSPanel {
 @MainActor
 private final class PetAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let store = TaskStore()
+    private let inbox = AnswerInbox()
+    private let thoughtStore = ThoughtStore()
+    private let notifier = LocalNotifier()
+    private let route = DashboardRoute()
     private var petWindow: FloatingPanel!
     private var dashboardWindow: FloatingPanel!
     private var hoverTimer: Timer?
@@ -716,6 +952,9 @@ private final class PetAppDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     private var collectorProcess: Process?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        notifier.prepare(onOpen: { [weak self] taskID in self?.openFromNotification(taskID) })
+        store.onSnapshot = { [weak self] tasks in self?.handleSnapshot(tasks) }
+        if store.hasSnapshot { handleSnapshot(store.tasks) }
         let petSize = NSSize(width: 118, height: 126)
         let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1200, height: 800)
         let petFrame = NSRect(x: screen.maxX - petSize.width - 28,
@@ -723,7 +962,7 @@ private final class PetAppDelegate: NSObject, NSApplicationDelegate, NSWindowDel
                               width: petSize.width, height: petSize.height)
         petWindow = makePanel(frame: petFrame, shadow: false)
         petWindow.delegate = self
-        let petView = DraggablePetView(rootView: PetView(store: store, onHover: { [weak self] hovering in
+        let petView = DraggablePetView(rootView: PetView(store: store, inbox: inbox, onHover: { [weak self] hovering in
             if hovering { self?.showDashboard() } else { self?.checkHoverSoon() }
         }))
         petView.onEnter = { [weak self] in self?.showDashboard() }
@@ -735,6 +974,9 @@ private final class PetAppDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         dashboardWindow = makePanel(frame: NSRect(x: 0, y: 0, width: 420, height: 600), shadow: true)
         let dashboardView = HoverHostingView(rootView: DashboardView(
             store: store,
+            inbox: inbox,
+            thoughtStore: thoughtStore,
+            route: route,
             onClose: { [weak self] in self?.hideDashboard() },
             onQuit: { NSApp.terminate(nil) }
         ))
@@ -745,6 +987,34 @@ private final class PetAppDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.checkHover() }
         }
+    }
+
+    private func handleSnapshot(_ tasks: [AgentTask]) {
+        let observations = tasks.map { task in
+            AnswerObservation(id: task.id, source: task.source, title: task.title,
+                              status: task.status, updatedAt: task.updatedAt,
+                              revision: task.answerRevision, url: task.url)
+        }
+        for answer in inbox.ingest(observations) {
+            notifier.notify(taskID: answer.id,
+                            source: SourceStyle.label(answer.source),
+                            title: answer.title)
+        }
+    }
+
+    private func openFromNotification(_ taskID: String) {
+        let task = store.tasks.first { $0.id == taskID }
+        let answer = inbox.unread.first { $0.id == taskID }
+        let destination = task?.destination ?? answer.flatMap {
+            DestinationURL.forTask(id: $0.id, source: $0.source, raw: $0.url)
+        }
+        if let destination,
+           NSWorkspace.shared.open(destination) {
+            inbox.markRead(id: taskID)
+            return
+        }
+        route.showNeedsHandling(source: task?.source ?? answer?.source ?? "")
+        showDashboard()
     }
 
     func applicationWillTerminate(_ notification: Notification) {

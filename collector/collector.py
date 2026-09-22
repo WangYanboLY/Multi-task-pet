@@ -136,8 +136,10 @@ def collect_codex(codex_home, timestamp):
             status, detail = "failed", "这一轮失败"
         elif turn_status == "interrupted":
             status, detail = "idle", "这一轮已中断"
-        else:
+        elif turn_status == "completed":
             status, detail = "idle", "这一轮已结束"
+        else:
+            status, detail = "unknown", "这一轮状态未识别"
         family_id, family = project_family(row["cwd"], "Codex")
         title = clean_title(row["name"] or row["title"], "Codex 任务")
         if thread_id in children or row["agent_path"]:
@@ -153,6 +155,10 @@ def collect_codex(codex_home, timestamp):
             "updated_at": iso_from_ms(updated_ms),
             "detail": detail,
         }
+        # The thread's updated_at can change for metadata edits; only a
+        # terminal completed turn is evidence of a new assistant answer.
+        if turn_status == "completed" and turn["completed_at"] and turn["rollout_ordinal"] is not None:
+            item["answer_revision"] = "{}:{}".format(turn["rollout_ordinal"], turn["completed_at"])
         (active if status == "working" else recent).append(item)
     recent.sort(key=lambda item: item["updated_at"], reverse=True)
     return active + recent[:8]
@@ -267,7 +273,11 @@ def collect_claude(claude_home, desktop_home, timestamp):
         session_id = data.get("sessionId")
         if not isinstance(session_id, str) or not session_id:
             continue
-        updated_ms = int(data.get("statusUpdatedAt") or data.get("updatedAt") or 0)
+        try:
+            status_updated_ms = int(data.get("statusUpdatedAt") or 0)
+            updated_ms = int(data.get("statusUpdatedAt") or data.get("updatedAt") or 0)
+        except (TypeError, ValueError):
+            continue
         if updated_ms <= 0:
             continue
         age = timestamp - updated_ms
@@ -300,6 +310,10 @@ def collect_claude(claude_home, desktop_home, timestamp):
             "updated_at": iso_from_ms(updated_ms),
             "detail": detail,
         })
+        # updatedAt is not a completion signal. Only a fresh, explicit idle
+        # status transition gets a stable answer revision.
+        if status == "idle" and status_updated_ms > 0:
+            tasks[-1]["answer_revision"] = str(status_updated_ms)
         transcript_files = list((claude_home / "projects").glob("*/{}.jsonl".format(session_id)))
         if transcript_files:
             progress = claude_task_progress(transcript_files[0], timestamp)
@@ -350,7 +364,7 @@ def validate_web_event(value, timestamp):
     identifier = value.get("id")
     if not isinstance(identifier, str) or not identifier or len(identifier) > 512:
         identifier = parsed.path or "/"
-    return {
+    result = {
         "id": "web:{}:{}".format(source.lower(), identifier),
         "source": source,
         "family_id": "web:" + source.lower(),
@@ -362,6 +376,16 @@ def validate_web_event(value, timestamp):
         "url": url,
         "seen_ms": timestamp,
     }
+    revision = value.get("answer_revision")
+    if revision is not None:
+        # A content script sends this only after seeing a response end. It is
+        # stable across heartbeats, unlike updated_at and observed_at.
+        if (not isinstance(revision, str) or
+                not re.fullmatch(r"[1-9][0-9]{0,15}", revision) or
+                int(revision) > timestamp):
+            return None
+        result["answer_revision"] = revision
+    return result
 
 
 def atomic_json(path, value):

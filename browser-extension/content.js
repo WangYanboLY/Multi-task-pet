@@ -7,6 +7,7 @@ if (!globalThis.__agentPetTabObserverV1) {
 
   const HEARTBEAT_MS = 10_000;
   const MIN_SCAN_GAP_MS = 2_000;
+  const COMPLETION_CONFIRM_MS = 2_000;
   const STOP_LABEL = /^(?:stop(?: generating| response| thinking| streaming)?|停止(?:生成|回答|回复|响应))$/i;
   const APPROVE_LABEL = /^(?:allow|approve|grant|允许|批准)$/i;
   const REJECT_LABEL = /^(?:deny|reject|decline|拒绝)$/i;
@@ -18,6 +19,12 @@ if (!globalThis.__agentPetTabObserverV1) {
 
   let currentKey = "";
   let sawWorking = false;
+  let lastStatus = "unknown";
+  let completionCandidateAt = 0;
+  let completionTimer = null;
+  let answerRevision = null;
+  let lastRevisionAt = 0;
+  let interruptedGeneration = false;
   let lastSignature = "";
   let lastSentAt = 0;
   let lastScanAt = 0;
@@ -68,10 +75,57 @@ if (!globalThis.__agentPetTabObserverV1) {
     const buttons = document.querySelectorAll('button, [role="button"]');
     for (const button of buttons) {
       if (!visible(button)) continue;
-      if (STOP_TEST_IDS.has(button.getAttribute("data-testid"))) return true;
-      if (STOP_LABEL.test(buttonLabel(button))) return true;
+      if (isStopButton(button)) return true;
     }
     return false;
+  }
+
+  function isStopButton(button) {
+    return STOP_TEST_IDS.has(button.getAttribute("data-testid")) ||
+      STOP_LABEL.test(buttonLabel(button));
+  }
+
+  function clearCompletionTimer() {
+    if (completionTimer !== null) clearTimeout(completionTimer);
+    completionTimer = null;
+  }
+
+  function resetConversationState() {
+    clearCompletionTimer();
+    sawWorking = false;
+    lastStatus = "unknown";
+    completionCandidateAt = 0;
+    answerRevision = null;
+    lastRevisionAt = 0;
+    interruptedGeneration = false;
+    lastSignature = "";
+  }
+
+  function updateAnswerRevision(status, observedAt) {
+    if (status === "working") {
+      if (lastStatus !== "working") interruptedGeneration = false;
+      completionCandidateAt = 0;
+      clearCompletionTimer();
+    } else if (status === "idle" && lastStatus === "working" && !interruptedGeneration) {
+      completionCandidateAt = observedAt;
+      clearCompletionTimer();
+      completionTimer = setTimeout(() => {
+        completionTimer = null;
+        observe(true);
+      }, COMPLETION_CONFIRM_MS);
+    } else if (status === "idle" && completionCandidateAt &&
+               observedAt - completionCandidateAt >= COMPLETION_CONFIRM_MS) {
+      // Keep this revision unchanged on later heartbeats. The next observed
+      // working→idle cycle can create a new one.
+      lastRevisionAt = Math.max(observedAt, lastRevisionAt + 1);
+      answerRevision = String(lastRevisionAt);
+      completionCandidateAt = 0;
+      interruptedGeneration = false;
+    } else if (status !== "idle") {
+      completionCandidateAt = 0;
+      clearCompletionTimer();
+    }
+    lastStatus = status;
   }
 
   function hasExplicitDecisionDialog() {
@@ -133,25 +187,27 @@ if (!globalThis.__agentPetTabObserverV1) {
     const info = conversation();
     if (!info) {
       currentKey = "";
-      sawWorking = false;
-      lastSignature = "";
+      resetConversationState();
       return;
     }
 
     const key = `${info.source}:${info.id}`;
     if (key !== currentKey) {
       currentKey = key;
-      sawWorking = false;
-      lastSignature = "";
+      resetConversationState();
     }
 
+    const observedAt = Date.now();
+    const status = observedStatus();
+    updateAnswerRevision(status, observedAt);
     const event = {
       ...info,
       title: conversationTitle(info),
-      status: observedStatus(),
-      observed_at: Date.now()
+      status,
+      observed_at: observedAt,
+      ...(answerRevision ? { answer_revision: answerRevision } : {})
     };
-    const signature = JSON.stringify([event.url, event.title, event.status]);
+    const signature = JSON.stringify([event.url, event.title, event.status, event.answer_revision]);
     if (!force && signature === lastSignature && Date.now() - lastSentAt < HEARTBEAT_MS) {
       return;
     }
@@ -186,6 +242,11 @@ if (!globalThis.__agentPetTabObserverV1) {
     attributes: true,
     attributeFilter: ["aria-label", "aria-current", "data-testid", "hidden", "title"]
   });
+  addEventListener("click", (event) => {
+    const button = event.target instanceof Element &&
+      event.target.closest('button, [role="button"]');
+    if (button && isStopButton(button)) interruptedGeneration = true;
+  }, true);
   addEventListener("popstate", scheduleObserve);
   addEventListener("hashchange", scheduleObserve);
   addEventListener("pageshow", () => observe(true));

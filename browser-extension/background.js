@@ -38,13 +38,24 @@ function validObservation(raw, sender) {
     return null;
   }
 
+  const revision = raw.answer_revision;
+  if (revision !== undefined && (
+    typeof revision !== "string" ||
+    !/^[1-9][0-9]{0,15}$/.test(revision) ||
+    !Number.isSafeInteger(Number(revision)) ||
+    Number(revision) > raw.observed_at
+  )) {
+    return null;
+  }
+
   return {
     source,
     id: raw.id,
     url: observedUrl.href,
     title: raw.title.trim().slice(0, 160),
     status: raw.status,
-    observed_at: raw.observed_at
+    observed_at: raw.observed_at,
+    ...(revision ? { answer_revision: revision } : {})
   };
 }
 
