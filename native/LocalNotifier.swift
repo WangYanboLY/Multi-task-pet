@@ -1,5 +1,8 @@
 import Foundation
+import os
 import UserNotifications
+
+private let notificationLogger = Logger(subsystem: "local.agentpet.desktop", category: "notifications")
 
 @MainActor
 final class LocalNotifier: NSObject, UNUserNotificationCenterDelegate {
@@ -42,13 +45,19 @@ final class LocalNotifier: NSObject, UNUserNotificationCenterDelegate {
         case .notRequested:
             pending.append(event)
             permissionState = .requesting
-            center.requestAuthorization(options: [.alert, .sound]) { [weak self] granted, _ in
+            center.requestAuthorization(options: [.alert, .sound]) { [weak self] granted, error in
+                if let error {
+                    notificationLogger.error("Notification authorization failed: \(error.localizedDescription, privacy: .public)")
+                }
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     self.permissionState = granted ? .granted : .denied
                     let events = self.pending
                     self.pending.removeAll()
-                    guard granted else { return }
+                    guard granted else {
+                        notificationLogger.notice("Local notifications are not authorized")
+                        return
+                    }
                     events.forEach { self.schedule($0) }
                 }
             }
@@ -68,7 +77,11 @@ final class LocalNotifier: NSObject, UNUserNotificationCenterDelegate {
             content: content,
             trigger: nil
         )
-        center.add(request) { _ in }
+        center.add(request) { error in
+            if let error {
+                notificationLogger.error("Could not schedule local notification: \(error.localizedDescription, privacy: .public)")
+            }
+        }
     }
 
     nonisolated func userNotificationCenter(

@@ -33,8 +33,8 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>Agent Pet</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.4.6</string>
-  <key>CFBundleVersion</key><string>10</string>
+  <key>CFBundleShortVersionString</key><string>0.4.7</string>
+  <key>CFBundleVersion</key><string>11</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
@@ -91,4 +91,8 @@ xattr -cr "$OUTPUT_BUNDLE"
 xattr -d com.apple.FinderInfo "$OUTPUT_BUNDLE" 2>/dev/null || true
 xattr -d 'com.apple.fileprovider.fpfs#P' "$OUTPUT_BUNDLE" 2>/dev/null || true
 codesign --verify --deep --strict "$OUTPUT_BUNDLE"
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+if [[ -x "$LSREGISTER" ]]; then
+  "$LSREGISTER" -f "$OUTPUT_BUNDLE" || print -u2 "Warning: Could not refresh Launch Services registration"
+fi
 print "Built $OUTPUT_BUNDLE"

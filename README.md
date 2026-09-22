@@ -20,6 +20,8 @@ open "$HOME/Applications/Agent Pet.app"
 
 构建脚本默认将应用放到本机 `~/Applications`，避免源码位于 iCloud 同步目录时同步附加信息影响签名校验。可用 `AGENT_PET_OUTPUT_BUNDLE` 指定其他输出位置。
 
+构建完成后脚本会刷新 macOS 的应用登记。若曾从旧版 `native/dist/Agent Pet.app` 启动桌宠，应移走旧包，避免两个相同应用 ID 的版本同时存在，使通知中心可能沿用旧版缺失的图标。
+
 构建时，`native/GenerateIcon.swift` 会生成并打包 Agent Pet 图标；macOS 通知中心的提醒使用这个应用图标。
 
 桌宠头上的绿色数字表示正在运行的对话数（`working` 或 `waiting`），黄色数字表示有新回答但尚未在桌宠中查看或标记已读的对话数，蓝色数字表示含有运行中对话的活跃任务族数。
