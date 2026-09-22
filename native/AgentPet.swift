@@ -600,12 +600,6 @@ private struct DashboardView: View {
                 .padding(.bottom, 9)
 
             conversationTabs
-                .padding(.bottom, 7)
-            Text(selectedFilter == .active
-                 ? "按本机日期：今天更新的待后续记录也算活跃"
-                 : "等待你操作、执行失败，或有尚未查看的新回答")
-                .font(.system(size: 10))
-                .foregroundStyle(Palette.muted)
                 .padding(.bottom, 12)
 
             if store.isStale {
@@ -667,23 +661,6 @@ private struct DashboardView: View {
 
             Rectangle().fill(Palette.line).frame(height: 1)
             thoughtComposer
-            Rectangle().fill(Palette.line).frame(height: 1)
-            HStack(alignment: .top, spacing: 8) {
-                Text("网页聊天仅追踪已打开并安装浏览器伴侣的标签；普通 Claude / ChatGPT 桌面聊天暂无线索。")
-                    .font(.system(size: 10))
-                    .foregroundStyle(Palette.muted)
-                    .fixedSize(horizontal: false, vertical: true)
-                Button("设置说明") {
-                    if let readme = Bundle.main.resourceURL?.appendingPathComponent("SETUP.md") {
-                        NSWorkspace.shared.activateFileViewerSelecting([readme])
-                    }
-                }
-                .buttonStyle(.plain)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(Palette.mint)
-                .fixedSize()
-            }
-            .padding(.top, 9)
         }
         .padding(17)
         .frame(width: 420, height: 600)
