@@ -203,7 +203,7 @@ def collect_codex(codex_home, timestamp, ignored_ids=None):
     return active + recent[:8]
 
 
-def desktop_code_titles(desktop_home):
+def desktop_code_sessions(desktop_home):
     result = {}
     base = desktop_home / "claude-code-sessions"
     if not base.is_dir():
@@ -214,7 +214,15 @@ def desktop_code_titles(desktop_home):
             continue
         session_id = data.get("cliSessionId")
         if isinstance(session_id, str) and session_id:
-            result[session_id] = clean_title(data.get("title"), "")
+            local_id = data.get("sessionId")
+            if not isinstance(local_id, str) or not re.fullmatch(
+                    r"local_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+                    local_id):
+                local_id = None
+            result[session_id] = {
+                "title": clean_title(data.get("title"), ""),
+                "local_id": local_id,
+            }
     return result
 
 
@@ -370,7 +378,7 @@ def collect_claude(claude_home, desktop_home, timestamp, prior_revisions=None):
     sessions_dir = claude_home / "sessions"
     if not sessions_dir.is_dir():
         return []
-    titles = desktop_code_titles(desktop_home)
+    desktop_sessions = desktop_code_sessions(desktop_home)
     prior_revisions = prior_revisions or {}
     tasks = []
     for path in sessions_dir.glob("*.json"):
@@ -406,7 +414,8 @@ def collect_claude(claude_home, desktop_home, timestamp, prior_revisions=None):
             detail += " · CLI"
         family_id, family = project_family(data.get("cwd"), source)
         fallback = "{} · {}".format(source, session_id[:8])
-        title = clean_title(titles.get(session_id) or data.get("name"), fallback)
+        desktop_session = desktop_sessions.get(session_id, {})
+        title = clean_title(desktop_session.get("title") or data.get("name"), fallback)
         task_id = "claude-code:" + session_id
         tasks.append({
             "id": task_id,
@@ -418,6 +427,9 @@ def collect_claude(claude_home, desktop_home, timestamp, prior_revisions=None):
             "updated_at": iso_from_ms(updated_ms),
             "detail": detail,
         })
+        if (entrypoint == "claude-desktop" and desktop_session.get("local_id") and
+                desktop_session["local_id"] == data.get("hostSessionId")):
+            tasks[-1]["url"] = "claude://code/continue?session=" + desktop_session["local_id"]
         transcript_files = list((claude_home / "projects").glob("*/{}.jsonl".format(session_id)))
         terminal_ms = claude_terminal_answer(transcript_files[0], timestamp) if transcript_files else None
         # A desktop Code session can leave its JSON status at busy after its

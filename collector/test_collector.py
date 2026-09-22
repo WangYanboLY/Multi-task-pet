@@ -190,6 +190,59 @@ class CollectorTests(unittest.TestCase):
             self.assertEqual(by_id["claude-code:desktop"]["status"], "working")
             self.assertNotIn("answer_revision", by_id["claude-code:desktop"])
 
+    def test_claude_desktop_code_links_only_matched_unarchived_local_sessions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sessions = root / "claude" / "sessions"
+            desktop = root / "desktop" / "claude-code-sessions" / "project" / "sessions"
+            sessions.mkdir(parents=True)
+            desktop.mkdir(parents=True)
+            timestamp = now_ms()
+            for identifier, entrypoint in (
+                ("linked", "claude-desktop"),
+                ("archived", "claude-desktop"),
+                ("invalid", "claude-desktop"),
+                ("unmatched", "claude-desktop"),
+                ("mismatched", "claude-desktop"),
+                ("cli", "cli"),
+            ):
+                session = {
+                    "pid": os.getpid(), "sessionId": identifier, "cwd": directory,
+                    "entrypoint": entrypoint, "status": "idle", "statusUpdatedAt": timestamp,
+                }
+                if identifier not in ("unmatched", "mismatched"):
+                    session["hostSessionId"] = "local_" + {
+                        "linked": "11111111-1111-1111-1111-111111111111",
+                        "archived": "22222222-2222-2222-2222-222222222222",
+                        "invalid": "not-a-uuid",
+                        "cli": "33333333-3333-3333-3333-333333333333",
+                    }[identifier]
+                if identifier == "mismatched":
+                    session["hostSessionId"] = "local_44444444-4444-4444-4444-444444444444"
+                (sessions / (identifier + ".json")).write_text(json.dumps(session))
+            local_ids = {
+                "linked": "local_11111111-1111-1111-1111-111111111111",
+                "archived": "local_22222222-2222-2222-2222-222222222222",
+                "invalid": "local_not-a-uuid",
+                "mismatched": "local_55555555-5555-5555-5555-555555555555",
+                "cli": "local_33333333-3333-3333-3333-333333333333",
+            }
+            for identifier, local_id in local_ids.items():
+                (desktop / (local_id + ".json")).write_text(json.dumps({
+                    "sessionId": local_id, "cliSessionId": identifier,
+                    "title": "Desktop title " + identifier,
+                    "isArchived": identifier == "archived",
+                }))
+
+            tasks = collect_claude(root / "claude", root / "desktop", timestamp)
+            by_id = {task["id"]: task for task in tasks}
+            linked = by_id["claude-code:linked"]
+            self.assertEqual(linked["title"], "Desktop title linked")
+            self.assertEqual(linked["url"],
+                             "claude://code/continue?session=local_11111111-1111-1111-1111-111111111111")
+            for identifier in ("archived", "invalid", "unmatched", "mismatched", "cli"):
+                self.assertNotIn("url", by_id["claude-code:" + identifier])
+
     def test_claude_revision_requires_explicit_fresh_idle_status_time(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

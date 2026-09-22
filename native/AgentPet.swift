@@ -296,9 +296,18 @@ private enum SourceStyle {
 private enum DestinationURL {
     static func forTask(id: String, source: String, raw: String?) -> URL? {
         if let raw, let parsed = URL(string: raw),
-           let scheme = parsed.scheme?.lowercased(),
-           ["https", "http", "codex"].contains(scheme) {
-            return parsed
+           let scheme = parsed.scheme?.lowercased() {
+            if ["https", "http", "codex"].contains(scheme) { return parsed }
+            if scheme == "claude", SourceStyle.normalized(source) == "claude",
+               id.hasPrefix("claude-code:"), parsed.host == "code", parsed.path == "/continue",
+               parsed.fragment == nil,
+               let components = URLComponents(url: parsed, resolvingAgainstBaseURL: false),
+               let items = components.queryItems, items.count == 1,
+               items[0].name == "session", let sessionID = items[0].value,
+               sessionID.hasPrefix("local_"),
+               UUID(uuidString: String(sessionID.dropFirst("local_".count))) != nil {
+                return parsed
+            }
         }
         guard SourceStyle.normalized(source) == "codex", id.hasPrefix("codex:") else { return nil }
         let threadID = String(id.dropFirst("codex:".count))
