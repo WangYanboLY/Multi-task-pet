@@ -419,31 +419,62 @@ private struct TaskRow: View {
                     Circle().fill(Palette.amber).frame(width: 7, height: 7).padding(.top, 4)
                         .accessibilityLabel("未查看的新回答")
                 }
-                Text(task.displayTitle)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Palette.ink)
-                    .lineLimit(2)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                if task.destination != nil {
+                    Button { onOpen(task) } label: { titleLabel }
+                        .buttonStyle(.plain)
+                        .help("打开对话")
+                } else {
+                    titleLabel
+                }
                 Toggle("已处理", isOn: Binding(
                     get: { false },
                     set: { if $0 { onResolve(task) } }
                 ))
                 .toggleStyle(.checkbox)
-                .font(.system(size: 10))
+                .font(.system(size: 11))
                 .fixedSize()
+                .padding(.horizontal, 3)
+                .padding(.vertical, 5)
+                .contentShape(Rectangle())
                 .help("将这条任务标记为已处理")
                 if task.destination != nil {
                     Button {
                         onOpen(task)
                     } label: {
                         Image(systemName: "arrow.up.right.square")
-                            .font(.system(size: 12, weight: .medium))
+                            .font(.system(size: 14, weight: .medium))
+                            .frame(width: 30, height: 30)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(Palette.muted)
                     .help("打开对话")
                 }
             }
+            if task.destination != nil {
+                Button { onOpen(task) } label: { taskDetails }
+                    .buttonStyle(.plain)
+                    .help("打开对话")
+            } else {
+                taskDetails
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(11)
+        .background(Palette.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private var titleLabel: some View {
+        Text(task.displayTitle)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(Palette.ink)
+            .lineLimit(2)
+            .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
+            .contentShape(Rectangle())
+    }
+
+    private var taskDetails: some View {
+        VStack(alignment: .leading, spacing: 7) {
             if task.hasDistinctTopicLabel {
                 Text(task.title)
                     .font(.system(size: 10))
@@ -470,8 +501,7 @@ private struct TaskRow: View {
                 .foregroundStyle(Palette.muted)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(11)
-        .background(Palette.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .contentShape(Rectangle())
     }
 }
 
@@ -483,7 +513,7 @@ private struct FamilyCard: View {
     @State private var expanded = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: 0) {
             Button {
                 withAnimation(.easeInOut(duration: 0.18)) { expanded.toggle() }
             } label: {
@@ -521,19 +551,24 @@ private struct FamilyCard: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("\(family.name)，\(family.tasks.count) 项，\(family.tasks.prefix(3).map(\.displayTitle).joined(separator: "，"))")
             .accessibilityValue(expanded ? "已展开" : "已折叠")
 
             if expanded {
-                ForEach(family.tasks) { task in
-                    TaskRow(task: task, isUnread: unreadIDs.contains(task.id),
-                            onOpen: onOpen, onResolve: onResolve)
+                VStack(alignment: .leading, spacing: 9) {
+                    ForEach(family.tasks) { task in
+                        TaskRow(task: task, isUnread: unreadIDs.contains(task.id),
+                                onOpen: onOpen, onResolve: onResolve)
+                    }
                 }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 12)
             }
         }
-        .padding(12)
         .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Palette.line, lineWidth: 1))
     }
@@ -581,14 +616,20 @@ private struct DashboardView: View {
                 Spacer()
                 Button { store.reload() } label: {
                     Image(systemName: "arrow.clockwise")
+                        .frame(width: 32, height: 32)
+                        .contentShape(Rectangle())
                 }
                 .help("立即刷新")
                 Button(action: onClose) {
                     Image(systemName: "xmark")
+                        .frame(width: 32, height: 32)
+                        .contentShape(Rectangle())
                 }
                 .help("关闭面板")
                 Button(action: onQuit) {
                     Image(systemName: "power")
+                        .frame(width: 32, height: 32)
+                        .contentShape(Rectangle())
                 }
                 .help("退出 Agent Pet")
             }
@@ -658,6 +699,7 @@ private struct DashboardView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .scrollIndicators(.hidden)
+            .id("\(selectedCategory.rawValue):\(selectedFilter.rawValue)")
 
             Rectangle().fill(Palette.line).frame(height: 1)
             thoughtComposer
@@ -687,6 +729,8 @@ private struct DashboardView: View {
                 Spacer()
             }
             .foregroundStyle(Palette.muted)
+            .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         if showThoughts {
@@ -792,6 +836,8 @@ private struct DashboardView: View {
                     Spacer()
                 }
                 .foregroundStyle(Palette.muted)
+                .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityValue(showResolved ? "已展开" : "已折叠")
@@ -852,18 +898,23 @@ private struct DashboardView: View {
         return VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 6) {
                 Circle().fill(Palette.amber).frame(width: 7, height: 7)
-                Text(currentTask?.displayTitle ?? (answer.title.isEmpty ? "未命名对话" : answer.title))
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Palette.ink)
-                    .lineLimit(2)
-                Spacer()
+                if destination(for: answer) != nil {
+                    Button { openUnread(answer) } label: { unreadTitle(answer, currentTask: currentTask) }
+                        .buttonStyle(.plain)
+                        .help("打开对话")
+                } else {
+                    unreadTitle(answer, currentTask: currentTask)
+                }
                 Toggle("已处理", isOn: Binding(
                     get: { false },
                     set: { if $0 { resolveUnread(answer) } }
                 ))
                 .toggleStyle(.checkbox)
-                .font(.system(size: 10))
+                .font(.system(size: 11))
                 .fixedSize()
+                .padding(.horizontal, 3)
+                .padding(.vertical, 5)
+                .contentShape(Rectangle())
                 .help("将这条新回答标记为已处理")
             }
             if let currentTask, currentTask.hasDistinctTopicLabel {
@@ -881,17 +932,32 @@ private struct DashboardView: View {
             }
             HStack(spacing: 11) {
                 if destination(for: answer) != nil {
-                    Button("打开对话") { openUnread(answer) }
+                    Button { openUnread(answer) } label: {
+                        Text("打开对话").padding(.horizontal, 4).padding(.vertical, 6)
+                            .contentShape(Rectangle())
+                    }
                 }
-                Button("标为已读") { inbox.markRead(id: answer.id) }
+                Button { inbox.markRead(id: answer.id) } label: {
+                    Text("标为已读").padding(.horizontal, 4).padding(.vertical, 6)
+                        .contentShape(Rectangle())
+                }
             }
             .buttonStyle(.plain)
-            .font(.system(size: 10, weight: .semibold))
+            .font(.system(size: 11, weight: .semibold))
             .foregroundStyle(Palette.mint)
         }
         .padding(11)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Palette.card, in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func unreadTitle(_ answer: UnreadAnswer, currentTask: AgentTask?) -> some View {
+        Text(currentTask?.displayTitle ?? (answer.title.isEmpty ? "未命名对话" : answer.title))
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(Palette.ink)
+            .lineLimit(2)
+            .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
+            .contentShape(Rectangle())
     }
 
     private func destination(for answer: UnreadAnswer) -> URL? {
