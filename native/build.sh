@@ -29,11 +29,12 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
   <key>CFBundleDisplayName</key><string>Agent Pet</string>
   <key>CFBundleExecutable</key><string>AgentPet</string>
   <key>CFBundleIdentifier</key><string>local.agentpet.desktop</string>
+  <key>CFBundleIconFile</key><string>AgentPet.icns</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>Agent Pet</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.4.0</string>
-  <key>CFBundleVersion</key><string>4</string>
+  <key>CFBundleShortVersionString</key><string>0.4.1</string>
+  <key>CFBundleVersion</key><string>5</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
@@ -57,6 +58,16 @@ MACOSX_DEPLOYMENT_TARGET=13.0 swiftc \
   -parse-as-library -O -swift-version 6 -strict-concurrency=complete \
   "$SCRIPT_DIR/TopicLabeler.swift" \
   -o "$CONTENTS/MacOS/TopicLabeler"
+
+ICON_BUILDER="$STAGE_DIR/GenerateIcon"
+MACOSX_DEPLOYMENT_TARGET=13.0 swiftc \
+  -target "$(uname -m)-apple-macosx13.0" \
+  -O -framework AppKit \
+  "$SCRIPT_DIR/GenerateIcon.swift" \
+  -o "$ICON_BUILDER"
+ICONSET="$STAGE_DIR/AgentPet.iconset"
+"$ICON_BUILDER" "$ICONSET"
+iconutil -c icns -o "$CONTENTS/Resources/AgentPet.icns" "$ICONSET"
 
 cp -X "$COLLECTOR_SOURCE" "$CONTENTS/Resources/collector.py"
 cp -X "$SCRIPT_DIR/../collector/topic_context.py" "$CONTENTS/Resources/topic_context.py"

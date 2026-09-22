@@ -2,6 +2,8 @@
 
 一个运行在 Mac 桌面上的悬浮小桌宠。鼠标移入桌宠时，展开任务面板，查看 GPT 与 Claude 的对话族、待处理事项和新回答，也可以随手保存想法。
 
+<img src="assets/AgentPetIcon.png" alt="Agent Pet 图标" width="128">
+
 ## 启动
 
 需要 macOS 13 或更新版本、Command Line Tools 中的 Swift 编译器和系统自带的 Python 3；不需要 API 密钥。任务主题的本机模型概括另需 macOS 26 或更新版本，并取决于系统模型是否可用。
@@ -17,6 +19,8 @@ open "$HOME/Applications/Agent Pet.app"
 启动后桌宠显示在屏幕右下角，可拖动；鼠标移入显示面板。面板右上角有刷新、收起和退出按钮。应用退出时会停止它启动的本机收集器。当前版本不会自动添加开机启动项。
 
 构建脚本默认将应用放到本机 `~/Applications`，避免源码位于 iCloud 同步目录时同步附加信息影响签名校验。可用 `AGENT_PET_OUTPUT_BUNDLE` 指定其他输出位置。
+
+构建时，`native/GenerateIcon.swift` 会生成并打包 Agent Pet 图标；macOS 通知中心的提醒使用这个应用图标。
 
 桌宠头上的绿色数字表示正在运行的对话数（`working` 或 `waiting`），黄色数字表示有新回答但尚未在桌宠中查看或标记已读的对话数，蓝色数字表示含有运行中对话的活跃任务族数。
 

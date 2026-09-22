@@ -21,6 +21,8 @@ open "$HOME/Applications/Agent Pet.app"
 
 构建脚本默认放到本机 `~/Applications`，避免源码位于 iCloud 同步目录时同步附加信息影响签名校验。可用 `AGENT_PET_OUTPUT_BUNDLE` 指定其他输出位置。
 
+构建时，`GenerateIcon.swift` 会生成并打包 Agent Pet 图标；macOS 通知中心的提醒使用这个应用图标。
+
 ## 数据展示
 
 界面每 3 秒读取一次 `~/.agent-pet/tasks.json`。每条对话保留来源、状态、更新时间及可选的实际完成数；筛选后再依据 `family_id` 分组。
