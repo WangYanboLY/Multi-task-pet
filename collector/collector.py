@@ -18,6 +18,9 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
+from topic_context import topic_contexts
+from topic_labels import TopicLabels
+
 
 PORT = 56987
 POLL_SECONDS = 3
@@ -395,6 +398,7 @@ class Collector:
         self.codex_home = Path(codex_home or os.environ.get("AGENT_PET_CODEX_HOME") or user_home / ".codex")
         self.claude_home = Path(claude_home or os.environ.get("AGENT_PET_CLAUDE_HOME") or user_home / ".claude")
         self.desktop_home = Path(desktop_home or os.environ.get("AGENT_PET_CLAUDE_DESKTOP_HOME") or user_home / "Library/Application Support/Claude")
+        self.topic_labels = TopicLabels(self.home)
         self.browser = {}
         self.lock = threading.Lock()
 
@@ -424,6 +428,8 @@ class Collector:
                 tasks.append(copy)
         order = {"working": 0, "waiting": 1, "failed": 2, "unknown": 3, "idle": 4, "done": 5}
         tasks.sort(key=lambda task: (order.get(task["status"], 6), task["family"], task["title"]))
+        contexts = topic_contexts(tasks, self.codex_home, self.claude_home)
+        self.topic_labels.attach(tasks, contexts)
         result = {"generated_at": iso_from_ms(timestamp), "tasks": tasks,
                   "ignored_task_ids": sorted(ignored_ids)}
         atomic_json(self.home / "tasks.json", result)

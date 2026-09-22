@@ -32,8 +32,8 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>Agent Pet</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.3.0</string>
-  <key>CFBundleVersion</key><string>3</string>
+  <key>CFBundleShortVersionString</key><string>0.4.0</string>
+  <key>CFBundleVersion</key><string>4</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
@@ -52,15 +52,25 @@ MACOSX_DEPLOYMENT_TARGET=13.0 swiftc \
   "$SCRIPT_DIR/ThoughtStore.swift" \
   -o "$CONTENTS/MacOS/AgentPet"
 
+MACOSX_DEPLOYMENT_TARGET=13.0 swiftc \
+  -target "$(uname -m)-apple-macosx13.0" \
+  -parse-as-library -O -swift-version 6 -strict-concurrency=complete \
+  "$SCRIPT_DIR/TopicLabeler.swift" \
+  -o "$CONTENTS/MacOS/TopicLabeler"
+
 cp -X "$COLLECTOR_SOURCE" "$CONTENTS/Resources/collector.py"
+cp -X "$SCRIPT_DIR/../collector/topic_context.py" "$CONTENTS/Resources/topic_context.py"
+cp -X "$SCRIPT_DIR/../collector/topic_labels.py" "$CONTENTS/Resources/topic_labels.py"
 if [[ -f "$SCRIPT_DIR/../README.md" ]]; then
   cp -X "$SCRIPT_DIR/../README.md" "$CONTENTS/Resources/SETUP.md"
 else
   cp -X "$SCRIPT_DIR/README.md" "$CONTENTS/Resources/SETUP.md"
 fi
 chmod 755 "$CONTENTS/MacOS/AgentPet"
+chmod 755 "$CONTENTS/MacOS/TopicLabeler"
 plutil -lint "$CONTENTS/Info.plist"
 xattr -cr "$APP_BUNDLE"
+codesign --force --sign - "$CONTENTS/MacOS/TopicLabeler"
 codesign --force --sign - "$APP_BUNDLE"
 codesign --verify --deep --strict "$APP_BUNDLE"
 mkdir -p "${OUTPUT_BUNDLE:h}"

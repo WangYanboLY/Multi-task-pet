@@ -4,7 +4,7 @@
 
 ## 启动
 
-需要 macOS 13 或更新版本、Command Line Tools 中的 Swift 编译器和系统自带的 Python 3；不需要 API 密钥。
+需要 macOS 13 或更新版本、Command Line Tools 中的 Swift 编译器和系统自带的 Python 3；不需要 API 密钥。任务主题的本机模型概括另需 macOS 26 或更新版本，并取决于系统模型是否可用。
 
 在仓库根目录执行：
 
@@ -22,6 +22,8 @@ open "$HOME/Applications/Agent Pet.app"
 
 面板顶部可在 `GPT`、`Claude` 两个来源间切换。`GPT` 汇集 Codex 与 ChatGPT；`Claude` 汇集 Claude 网页、Claude 桌面 Code 和 Claude Code CLI。选定来源后，再选择“活跃对话”或“需要处理”。任务族卡片默认折叠，点击标题展开。每条任务旁有“已处理”复选框，可把已经处理过的任务从当前列表移走。首次打开时默认选择运行中对话最多的来源，数量相同则选择 `GPT`；手动切换后保留所选来源。
 
+有可用概括时，每条对话优先显示简短的任务主题，原标题显示在下方；折叠的任务族会预览最近三条对话的主题。没有概括时仍显示原标题。
+
 ## 覆盖范围
 
 | 来源 | 当前可显示的内容 | 边界 |
@@ -32,6 +34,14 @@ open "$HOME/Applications/Agent Pet.app"
 | 普通 ChatGPT/Claude 桌面聊天 | 暂无实时状态接入 | 目前找到的本机缓存不能可靠反映当前运行状态；这些聊天不会被伪装成自动追踪。 |
 
 浏览器伴侣安装方法见 `browser-extension/README.md`。安装时在 Chrome 的 `chrome://extensions` 或 Edge 的 `edge://extensions` 开启开发者模式，选择“加载已解压的扩展程序”，然后选择本项目的 `browser-extension` 文件夹。桌宠运行时，扩展会向本机 `127.0.0.1:56987` 发送已打开对话的观察结果。
+
+## 本机任务主题概括
+
+在 macOS 26 或更新版本上，桌宠使用 Apple Foundation Models 为对话生成简短中文主题，例如区分同一项目中的软件开发、数据处理和实验任务。每次使用前会检查系统语言模型及中文区域设置是否可用；模型不可用、生成失败或信息不足时，界面回退到原始对话标题。桌宠本体仍支持 macOS 13 或更新版本。这项功能不需要 Ollama，也不调用 TypeSafe Jev API 或其他云端模型接口。
+
+Codex 与 Claude Code 的顶层对话会从本机记录中提取首条及近期用户请求的有限片段，连同原标题和任务族名称交给本机模型。片段只在采集器和本机模型进程的内存中使用，不写入 Agent Pet 的任务汇总或主题缓存，也不发送到网络。主题生成在后台异步执行，不阻塞任务状态刷新；输入内容不变时复用缓存，不会因每三秒一次的状态刷新而重复生成。`~/.agent-pet/topic-labels.json` 保存任务 ID、输入内容的哈希、短标签及缓存时间；`tasks.json` 只加入可选的短标签，不包含用于概括的请求片段。
+
+网页对话目前只有浏览器伴侣提供的标题可供概括；浏览器伴侣仍不读取消息正文。是否扩大网页内容采集范围有待单独确认。标题过于笼统的网页对话可能无法得到有用的概括，此时仍显示原标题。主题概括只影响文字展示，不改变运行中、需要处理、未读提醒或任务族计数。
 
 ## 状态、筛选和提醒
 
@@ -59,9 +69,9 @@ Codex 与 Claude Code 子 agent 不单独进入任务列表、头顶计数或未
 
 面板底部可以输入随手想法，点发送按钮后保存在本机；“随手想法”区域可展开查看最近记录。它是本地笔记输入，不会发送给 GPT 或 Claude。
 
-收集器只读本机 Codex/Claude Code 的任务数据；为提取 `TaskCreate` 与 `TaskUpdate` 的完成数，它会扫描 Claude Code 的 transcript JSONL，其中可能包含消息正文，但不会把正文写入汇总文件或发送到网络。浏览器伴侣只发送对话 ID、标题、无查询参数的网址、可见状态、观察时间和回答完成标记，不发送消息正文。HTTP 接收器只绑定 `127.0.0.1`，且只接受浏览器扩展来源。项目不会修改 Codex 或 Claude 的设置，也不会安装 Hooks。
+收集器只读本机 Codex/Claude Code 的任务数据；为提取 `TaskCreate` 与 `TaskUpdate` 的完成数并生成本机主题概括，它会扫描相关记录及 Claude Code 的 transcript JSONL，其中可能包含消息正文，但不会把正文写入 Agent Pet 的汇总文件或发送到网络。浏览器伴侣只发送对话 ID、标题、无查询参数的网址、可见状态、观察时间和回答完成标记，不发送消息正文。HTTP 接收器只绑定 `127.0.0.1`，且只接受浏览器扩展来源。项目不会修改 Codex 或 Claude 的设置，也不会安装 Hooks。
 
-本机数据保存在 `~/.agent-pet`：任务汇总为 `tasks.json`，未读状态为 `read-state.json`，手动处理记录为 `resolved-tasks.json`，随手想法为 `thoughts.jsonl`。目录权限为 `0700`，这些文件权限为 `0600`，仅供当前用户访问。
+本机数据保存在 `~/.agent-pet`：任务汇总为 `tasks.json`，主题缓存为 `topic-labels.json`，未读状态为 `read-state.json`，手动处理记录为 `resolved-tasks.json`，随手想法为 `thoughts.jsonl`。目录权限为 `0700`，这些文件权限为 `0600`，仅供当前用户访问。
 
 如需删除，退出桌宠，移除浏览器扩展，再删除 `~/Applications/Agent Pet.app` 和 `~/.agent-pet`。源码仍保留在本项目中。
 

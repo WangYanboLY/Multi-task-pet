@@ -24,6 +24,7 @@ private struct AgentTask: Decodable, Identifiable {
     let familyId: String
     let family: String
     let title: String
+    let topicLabel: String?
     let status: String
     let updatedAt: String
     let detail: String?
@@ -45,6 +46,16 @@ private struct AgentTask: Decodable, Identifiable {
     }
     var familyKey: String { familyId.isEmpty ? "\(source):\(id)" : familyId }
     var familyName: String { family.isEmpty ? title : family }
+    var displayTitle: String {
+        let label = topicLabel?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !label.isEmpty { return label }
+        return title.isEmpty ? "未命名对话" : title
+    }
+    var hasDistinctTopicLabel: Bool {
+        guard let label = topicLabel?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !label.isEmpty, !title.isEmpty else { return false }
+        return label != title.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     var observedProgress: String? {
         guard let completed, let total, total > 0, completed >= 0, completed <= total else { return nil }
@@ -408,7 +419,7 @@ private struct TaskRow: View {
                     Circle().fill(Palette.amber).frame(width: 7, height: 7).padding(.top, 4)
                         .accessibilityLabel("未查看的新回答")
                 }
-                Text(task.title.isEmpty ? "未命名对话" : task.title)
+                Text(task.displayTitle)
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Palette.ink)
                     .lineLimit(2)
@@ -432,6 +443,12 @@ private struct TaskRow: View {
                     .foregroundStyle(Palette.muted)
                     .help("打开对话")
                 }
+            }
+            if task.hasDistinctTopicLabel {
+                Text(task.title)
+                    .font(.system(size: 10))
+                    .foregroundStyle(Palette.muted)
+                    .lineLimit(2)
             }
             if let detail = task.detail, !detail.isEmpty {
                 Text(detail).font(.system(size: 11)).foregroundStyle(Palette.muted).lineLimit(2)
@@ -488,11 +505,25 @@ private struct FamilyCard: View {
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(Palette.muted)
                         .fixedSize(horizontal: false, vertical: true)
+                    if !expanded {
+                        ForEach(Array(family.tasks.prefix(3))) { task in
+                            Text("· \(task.displayTitle)")
+                                .font(.system(size: 10))
+                                .foregroundStyle(Palette.muted)
+                                .lineLimit(1)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        if family.tasks.count > 3 {
+                            Text("还有 \(family.tasks.count - 3) 项")
+                                .font(.system(size: 10))
+                                .foregroundStyle(Palette.muted)
+                        }
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("\(family.name)，\(family.tasks.count) 项")
+            .accessibilityLabel("\(family.name)，\(family.tasks.count) 项，\(family.tasks.prefix(3).map(\.displayTitle).joined(separator: "，"))")
             .accessibilityValue(expanded ? "已展开" : "已折叠")
 
             if expanded {
@@ -789,14 +820,21 @@ private struct DashboardView: View {
             .accessibilityValue(showResolved ? "已展开" : "已折叠")
             if showResolved {
                 ForEach(entries) { entry in
+                    let currentTask = store.tasks.first { $0.id == entry.id }
                     Toggle(isOn: Binding(
                         get: { true },
                         set: { if !$0 { restoreTask(id: entry.id) } }
                     )) {
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(entry.title.isEmpty ? "未命名对话" : entry.title)
+                            Text(currentTask?.displayTitle ?? (entry.title.isEmpty ? "未命名对话" : entry.title))
                                 .font(.system(size: 11, weight: .medium))
                                 .foregroundStyle(Palette.ink)
+                            if let currentTask, currentTask.hasDistinctTopicLabel {
+                                Text(currentTask.title)
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(Palette.muted)
+                                    .lineLimit(2)
+                            }
                             Text("取消勾选即可恢复")
                                 .font(.system(size: 10))
                                 .foregroundStyle(Palette.muted)
@@ -833,10 +871,11 @@ private struct DashboardView: View {
     }
 
     private func unreadRow(_ answer: UnreadAnswer) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
+        let currentTask = store.tasks.first { $0.id == answer.id }
+        return VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 6) {
                 Circle().fill(Palette.amber).frame(width: 7, height: 7)
-                Text(answer.title.isEmpty ? "未命名对话" : answer.title)
+                Text(currentTask?.displayTitle ?? (answer.title.isEmpty ? "未命名对话" : answer.title))
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Palette.ink)
                     .lineLimit(2)
@@ -849,6 +888,12 @@ private struct DashboardView: View {
                 .font(.system(size: 10))
                 .fixedSize()
                 .help("将这条新回答标记为已处理")
+            }
+            if let currentTask, currentTask.hasDistinctTopicLabel {
+                Text(currentTask.title)
+                    .font(.system(size: 10))
+                    .foregroundStyle(Palette.muted)
+                    .lineLimit(2)
             }
             HStack(spacing: 8) {
                 SourcePill(source: answer.source)
