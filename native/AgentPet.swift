@@ -16,6 +16,7 @@ private struct TaskSnapshot: Decodable {
     let generatedAt: String
     let tasks: [AgentTask]
     let ignoredTaskIds: [String]?
+    let scheduledTaskIds: [String]?
 }
 
 private struct AgentTask: Decodable, Identifiable {
@@ -126,6 +127,7 @@ private enum ConversationFilter: String, CaseIterable, Identifiable {
 private final class TaskStore: ObservableObject {
     @Published private(set) var tasks: [AgentTask] = []
     @Published private(set) var ignoredTaskIDs: [String] = []
+    @Published private(set) var scheduledTaskIDs: Set<String> = []
     @Published private(set) var generatedAt: String?
     @Published private(set) var message: String = "正在读取任务…"
     @Published private(set) var hasSnapshot = false
@@ -147,6 +149,7 @@ private final class TaskStore: ObservableObject {
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
             tasks = []
             ignoredTaskIDs = []
+            scheduledTaskIDs = []
             generatedAt = nil
             hasSnapshot = false
             message = "等待任务数据。采集器尚未写入 tasks.json。"
@@ -160,6 +163,7 @@ private final class TaskStore: ObservableObject {
             var ignored = Set(snapshot.ignoredTaskIds ?? [])
             ignored.formUnion(snapshot.tasks.filter { $0.id.hasPrefix("claude-agent:") }.map(\.id))
             ignoredTaskIDs = Array(ignored)
+            scheduledTaskIDs = Set(snapshot.scheduledTaskIds ?? [])
             tasks = snapshot.tasks.filter { !ignored.contains($0.id) }
             generatedAt = snapshot.generatedAt
             hasSnapshot = true
@@ -823,7 +827,8 @@ private struct DashboardView: View {
     @ViewBuilder
     private var resolvedSection: some View {
         let entries = resolutions.resolved
-            .filter { selectedCategory.includes($0.source) }
+            .filter { selectedCategory.includes($0.source) &&
+                (selectedFilter != .needsHandling || !store.scheduledTaskIDs.contains($0.id)) }
             .sorted { $0.resolvedAt > $1.resolvedAt }
         if !entries.isEmpty {
             Button {
@@ -875,11 +880,17 @@ private struct DashboardView: View {
     private var unreadIDs: Set<String> { Set(inbox.unread.map(\.id)) }
 
     private func visibleTasks(in category: SourceCategory, filter: ConversationFilter) -> [AgentTask] {
-        store.tasks(in: category, filter: filter).filter { !resolutions.isResolved(id: $0.id) }
+        store.tasks(in: category, filter: filter).filter {
+            !resolutions.isResolved(id: $0.id) &&
+                (filter != .needsHandling || !store.scheduledTaskIDs.contains($0.id))
+        }
     }
 
     private func unreadAnswers(in category: SourceCategory) -> [UnreadAnswer] {
-        inbox.unread.filter { category.includes($0.source) && !resolutions.isResolved(id: $0.id) }
+        inbox.unread.filter {
+            category.includes($0.source) && !resolutions.isResolved(id: $0.id) &&
+                !store.scheduledTaskIDs.contains($0.id)
+        }
     }
 
     private func filterCount(in category: SourceCategory) -> Int {

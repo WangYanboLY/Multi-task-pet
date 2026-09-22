@@ -15,6 +15,7 @@ import sqlite3
 import tempfile
 import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
@@ -88,6 +89,28 @@ def read_sqlite(path, query, params=()):
     finally:
         if connection:
             connection.close()
+
+
+def scheduled_codex_task_ids(codex_home):
+    """Return local automation targets without guessing from conversation titles."""
+    result = set()
+    for path in (codex_home / "automations").glob("*/automation.toml"):
+        try:
+            if path.stat().st_size > 128 * 1024:
+                continue
+            content = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        match = re.search(r'^[ \t]*target_thread_id[ \t]*=[ \t]*"([^"]+)"[ \t]*(?:#.*)?$', content, re.MULTILINE)
+        if not match:
+            continue
+        identifier = match.group(1)
+        try:
+            if str(uuid.UUID(identifier)) == identifier.lower():
+                result.add("codex:" + identifier)
+        except ValueError:
+            continue
+    return result
 
 
 def collect_codex(codex_home, timestamp, ignored_ids=None):
@@ -413,6 +436,7 @@ class Collector:
     def snapshot(self):
         timestamp = now_ms()
         ignored_ids = set()
+        scheduled_ids = scheduled_codex_task_ids(self.codex_home)
         tasks = collect_codex(self.codex_home, timestamp, ignored_ids)
         tasks.extend(collect_claude(self.claude_home, self.desktop_home, timestamp))
         with self.lock:
@@ -431,7 +455,8 @@ class Collector:
         contexts = topic_contexts(tasks, self.codex_home, self.claude_home)
         self.topic_labels.attach(tasks, contexts)
         result = {"generated_at": iso_from_ms(timestamp), "tasks": tasks,
-                  "ignored_task_ids": sorted(ignored_ids)}
+                  "ignored_task_ids": sorted(ignored_ids),
+                  "scheduled_task_ids": sorted(scheduled_ids)}
         atomic_json(self.home / "tasks.json", result)
         return result
 

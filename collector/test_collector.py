@@ -9,10 +9,49 @@ import threading
 import time
 import unittest
 
-from collector import Collector, claude_task_progress, collect_claude, collect_codex, make_handler, now_ms, validate_web_event
+from collector import Collector, claude_task_progress, collect_claude, collect_codex, make_handler, now_ms, scheduled_codex_task_ids, validate_web_event
 
 
 class CollectorTests(unittest.TestCase):
+    def test_scheduled_codex_target_is_tagged_without_hiding_task(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            home = root / "codex"
+            home.mkdir()
+            target = "11111111-1111-1111-1111-111111111111"
+            ordinary = "22222222-2222-2222-2222-222222222222"
+            automation = home / "automations" / "heartbeat"
+            automation.mkdir(parents=True)
+            (automation / "automation.toml").write_text(
+                'kind = "heartbeat"\ntarget_thread_id = "{}"\n'.format(target))
+            cron = home / "automations" / "cron"
+            cron.mkdir()
+            (cron / "automation.toml").write_text('kind = "cron"\nname = "Ordinary task"\n')
+
+            state = sqlite3.connect(home / "state_5.sqlite")
+            state.execute("CREATE TABLE threads (id TEXT, cwd TEXT, title TEXT, name TEXT, agent_nickname TEXT, agent_path TEXT, updated_at INTEGER, updated_at_ms INTEGER, recency_at_ms INTEGER, archived INTEGER)")
+            state.execute("CREATE TABLE thread_spawn_edges (parent_thread_id TEXT, child_thread_id TEXT)")
+            history = sqlite3.connect(home / "thread_history_1.sqlite")
+            history.execute("CREATE TABLE thread_turns (thread_id TEXT, status TEXT, started_at INTEGER, completed_at INTEGER, rollout_ordinal INTEGER)")
+            current = now_ms()
+            for identifier in (target, ordinary):
+                state.execute("INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?)",
+                              (identifier, directory, "Ordinary task", None, None, None,
+                               current // 1000, current, current, 0))
+                history.execute("INSERT INTO thread_turns VALUES (?,?,?,?,?)",
+                                (identifier, "failed", (current - 1000) // 1000, None, 1))
+            state.commit()
+            history.commit()
+            state.close()
+            history.close()
+
+            self.assertEqual(scheduled_codex_task_ids(home), {"codex:" + target})
+            snapshot = Collector(home=root / "out", codex_home=home,
+                                 claude_home=root / "claude", desktop_home=root / "desktop").snapshot()
+            self.assertEqual(snapshot["scheduled_task_ids"], ["codex:" + target])
+            self.assertEqual({task["id"] for task in snapshot["tasks"]},
+                             {"codex:" + target, "codex:" + ordinary})
+
     def test_codex_requires_fresh_turn_and_thread(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
