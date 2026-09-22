@@ -33,6 +33,8 @@ CLAUDE_FRESH_SECONDS = 6 * 60 * 60
 STATUSES = {"working", "waiting", "done", "failed", "idle", "unknown"}
 WEB_HOSTS = {"chatgpt.com": "ChatGPT", "chat.openai.com": "ChatGPT", "claude.ai": "Claude"}
 TASK_PROGRESS_CACHE = {}
+CLAUDE_TERMINAL_CACHE = {}
+CLAUDE_TERMINAL_SETTLE_MS = 1500
 
 
 def now_ms():
@@ -297,11 +299,79 @@ def event_timestamp_ms(event):
         return 0
 
 
-def collect_claude(claude_home, desktop_home, timestamp):
+def claude_terminal_answer(transcript, timestamp):
+    """Return a settled top-level text end_turn after all later turn activity.
+
+    Only event structure and timestamps are inspected. Message text and tool
+    payloads are never read into the resulting state.
+    """
+    try:
+        metadata = transcript.stat()
+    except OSError:
+        return None
+    previous = CLAUDE_TERMINAL_CACHE.get(transcript)
+    identity = (metadata.st_dev, metadata.st_ino)
+    if (previous is None or previous["identity"] != identity or
+            metadata.st_size < previous["offset"] or
+            (metadata.st_size == previous["offset"] and
+             metadata.st_mtime_ns != previous["mtime_ns"])):
+        previous = {"identity": identity, "mtime_ns": metadata.st_mtime_ns,
+                    "offset": 0, "terminal_ms": 0, "activity_ms": 0}
+    if metadata.st_size > previous["offset"]:
+        try:
+            with transcript.open("r", encoding="utf-8", errors="replace") as handle:
+                handle.seek(previous["offset"])
+                while True:
+                    position = handle.tell()
+                    line = handle.readline()
+                    if not line:
+                        break
+                    if not line.endswith("\n"):
+                        handle.seek(position)
+                        break
+                    try:
+                        event = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(event, dict):
+                        continue
+                    event_ms = event_timestamp_ms(event)
+                    if not event_ms:
+                        continue
+                    event_type = event.get("type")
+                    if event_type in ("user", "queue-operation"):
+                        previous["activity_ms"] = max(previous["activity_ms"], event_ms)
+                    elif event_type == "assistant":
+                        message = event.get("message") or {}
+                        if not isinstance(message, dict):
+                            continue
+                        blocks = message.get("content") or []
+                        is_final_text = (message.get("stop_reason") == "end_turn" and
+                                         isinstance(blocks, list) and
+                                         any(isinstance(block, dict) and block.get("type") == "text"
+                                             for block in blocks))
+                        if is_final_text:
+                            previous["terminal_ms"] = max(previous["terminal_ms"], event_ms)
+                        else:
+                            previous["activity_ms"] = max(previous["activity_ms"], event_ms)
+                previous["offset"] = handle.tell()
+                previous["mtime_ns"] = metadata.st_mtime_ns
+        except OSError:
+            return None
+        CLAUDE_TERMINAL_CACHE[transcript] = previous
+    terminal_ms = previous["terminal_ms"]
+    if (terminal_ms > previous["activity_ms"] and
+            timestamp - terminal_ms >= CLAUDE_TERMINAL_SETTLE_MS):
+        return terminal_ms
+    return None
+
+
+def collect_claude(claude_home, desktop_home, timestamp, prior_revisions=None):
     sessions_dir = claude_home / "sessions"
     if not sessions_dir.is_dir():
         return []
     titles = desktop_code_titles(desktop_home)
+    prior_revisions = prior_revisions or {}
     tasks = []
     for path in sessions_dir.glob("*.json"):
         data = safe_json(path)
@@ -337,8 +407,9 @@ def collect_claude(claude_home, desktop_home, timestamp):
         family_id, family = project_family(data.get("cwd"), source)
         fallback = "{} · {}".format(source, session_id[:8])
         title = clean_title(titles.get(session_id) or data.get("name"), fallback)
+        task_id = "claude-code:" + session_id
         tasks.append({
-            "id": "claude-code:" + session_id,
+            "id": task_id,
             "source": source,
             "family_id": family_id,
             "family": family,
@@ -347,11 +418,26 @@ def collect_claude(claude_home, desktop_home, timestamp):
             "updated_at": iso_from_ms(updated_ms),
             "detail": detail,
         })
-        # updatedAt is not a completion signal. Only a fresh, explicit idle
-        # status transition gets a stable answer revision.
-        if status == "idle" and status_updated_ms > 0:
-            tasks[-1]["answer_revision"] = str(status_updated_ms)
         transcript_files = list((claude_home / "projects").glob("*/{}.jsonl".format(session_id)))
+        terminal_ms = claude_terminal_answer(transcript_files[0], timestamp) if transcript_files else None
+        # A desktop Code session can leave its JSON status at busy after its
+        # top-level transcript records a finished assistant answer. This
+        # terminal event is a second completion signal, never a general file
+        # modification time or a subagent's transcript.
+        transcript_revision = "transcript:{}".format(terminal_ms) if terminal_ms else None
+        if status == "working" and terminal_ms and terminal_ms > status_updated_ms:
+            tasks[-1]["status"] = "idle"
+            tasks[-1]["detail"] = "这一轮已结束 · " + ("Claude 桌面 Code" if source == "Claude" else "CLI")
+            tasks[-1]["updated_at"] = iso_from_ms(terminal_ms)
+            tasks[-1]["answer_revision"] = transcript_revision
+        # Preserve the transcript revision when the session JSON eventually
+        # catches up; switching to statusUpdatedAt would alert a second time.
+        elif status == "idle" and transcript_revision and transcript_revision == prior_revisions.get(task_id):
+            tasks[-1]["answer_revision"] = transcript_revision
+        # updatedAt is not a completion signal. A fresh explicit idle status
+        # otherwise keeps the existing stable revision behavior.
+        if status == "idle" and status_updated_ms > 0:
+            tasks[-1].setdefault("answer_revision", str(status_updated_ms))
         if transcript_files:
             progress = claude_task_progress(transcript_files[0], timestamp)
             if progress:
@@ -438,7 +524,17 @@ class Collector:
         ignored_ids = set()
         scheduled_ids = scheduled_codex_task_ids(self.codex_home)
         tasks = collect_codex(self.codex_home, timestamp, ignored_ids)
-        tasks.extend(collect_claude(self.claude_home, self.desktop_home, timestamp))
+        previous = safe_json(self.home / "tasks.json")
+        prior_revisions = {}
+        if isinstance(previous, dict) and isinstance(previous.get("tasks"), list):
+            prior_revisions = {
+                task["id"]: task["answer_revision"]
+                for task in previous["tasks"]
+                if isinstance(task, dict) and
+                isinstance(task.get("id"), str) and task["id"].startswith("claude-code:") and
+                isinstance(task.get("answer_revision"), str)
+            }
+        tasks.extend(collect_claude(self.claude_home, self.desktop_home, timestamp, prior_revisions))
         with self.lock:
             for key, event in list(self.browser.items()):
                 age = timestamp - event["seen_ms"]

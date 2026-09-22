@@ -9,7 +9,7 @@ import threading
 import time
 import unittest
 
-from collector import Collector, claude_task_progress, collect_claude, collect_codex, make_handler, now_ms, scheduled_codex_task_ids, validate_web_event
+from collector import Collector, claude_task_progress, claude_terminal_answer, collect_claude, collect_codex, make_handler, now_ms, scheduled_codex_task_ids, validate_web_event
 
 
 class CollectorTests(unittest.TestCase):
@@ -210,6 +210,115 @@ class CollectorTests(unittest.TestCase):
             self.assertEqual(by_id["claude-code:fresh"]["answer_revision"], str(timestamp - 1000))
             self.assertNotIn("answer_revision", by_id["claude-code:fallback"])
             self.assertNotIn("answer_revision", by_id["claude-code:stale"])
+
+    def test_desktop_code_finished_transcript_survives_late_idle_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sessions = root / "claude" / "sessions"
+            projects = root / "claude" / "projects" / "work"
+            sessions.mkdir(parents=True)
+            projects.mkdir(parents=True)
+            current = now_ms()
+            status_time = current - 30_000
+            finished_at = current - 10_000
+
+            def event(kind, when, stop=None, blocks=None):
+                from datetime import datetime, timezone
+                value = {"type": kind, "timestamp": datetime.fromtimestamp(when / 1000, timezone.utc).isoformat()}
+                if kind in ("user", "assistant"):
+                    value["message"] = {"role": kind, "content": [{"type": block} for block in (blocks or [])]}
+                    if stop:
+                        value["message"]["stop_reason"] = stop
+                return json.dumps(value) + "\n"
+
+            session = {"pid": os.getpid(), "sessionId": "desktop-late", "cwd": directory,
+                       "entrypoint": "claude-desktop", "status": "busy", "statusUpdatedAt": status_time}
+            (sessions / "desktop-late.json").write_text(json.dumps(session))
+            transcript = projects / "desktop-late.jsonl"
+            transcript.write_text(event("user", current - 20_000, blocks=["text"]) +
+                                  event("assistant", finished_at - 50, "end_turn", ["thinking"]) +
+                                  event("assistant", finished_at, "end_turn", ["text"]) +
+                                  event("system", finished_at + 500))
+
+            collector = Collector(home=root / "out", codex_home=root / "codex",
+                                  claude_home=root / "claude", desktop_home=root / "desktop")
+            first = collector.snapshot()["tasks"][0]
+            self.assertEqual(first["status"], "idle")
+            self.assertEqual(first["answer_revision"], "transcript:{}".format(finished_at))
+            self.assertEqual(collector.snapshot()["tasks"][0]["answer_revision"], first["answer_revision"])
+
+            session.update(status="idle", statusUpdatedAt=now_ms())
+            (sessions / "desktop-late.json").write_text(json.dumps(session))
+            caught_up = collector.snapshot()["tasks"][0]
+            self.assertEqual(caught_up["status"], "idle")
+            self.assertEqual(caught_up["answer_revision"], first["answer_revision"])
+
+    def test_desktop_code_transcript_new_activity_blocks_stale_completion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sessions = root / "claude" / "sessions"
+            projects = root / "claude" / "projects" / "work"
+            sessions.mkdir(parents=True)
+            projects.mkdir(parents=True)
+            current = now_ms()
+            (sessions / "desktop-active.json").write_text(json.dumps({
+                "pid": os.getpid(), "sessionId": "desktop-active", "cwd": directory,
+                "entrypoint": "claude-desktop", "status": "busy", "statusUpdatedAt": current - 40_000,
+            }))
+
+            def event(kind, when, stop=None, blocks=None):
+                from datetime import datetime, timezone
+                value = {"type": kind, "timestamp": datetime.fromtimestamp(when / 1000, timezone.utc).isoformat()}
+                if kind in ("user", "assistant"):
+                    value["message"] = {"role": kind, "content": [{"type": block} for block in (blocks or [])]}
+                    if stop:
+                        value["message"]["stop_reason"] = stop
+                return json.dumps(value) + "\n"
+
+            transcript = projects / "desktop-active.jsonl"
+            transcript.write_text(event("user", current - 30_000, blocks=["text"]) +
+                                  event("assistant", current - 20_000, "end_turn", ["text"]) +
+                                  event("queue-operation", current - 15_000) +
+                                  event("user", current - 14_000, blocks=["text"]) +
+                                  event("assistant", current - 12_000, "tool_use", ["tool_use"]) +
+                                  event("user", current - 10_000, blocks=["tool_result"]))
+            task = collect_claude(root / "claude", root / "desktop", current)[0]
+            self.assertEqual(task["status"], "working")
+            self.assertNotIn("answer_revision", task)
+
+            with transcript.open("a") as handle:
+                handle.write(event("assistant", current - 5_000, "end_turn", ["text"]))
+            task = collect_claude(root / "claude", root / "desktop", current)[0]
+            self.assertEqual(task["status"], "idle")
+            self.assertEqual(task["answer_revision"], "transcript:{}".format(current - 5_000))
+
+            with transcript.open("a") as handle:
+                handle.write(event("queue-operation", current - 4_000))
+            task = collect_claude(root / "claude", root / "desktop", current)[0]
+            self.assertEqual(task["status"], "working")
+            self.assertNotIn("answer_revision", task)
+
+    def test_claude_terminal_incremental_partial_line_and_truncation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            transcript = Path(directory) / "conversation.jsonl"
+            current = now_ms()
+            from datetime import datetime, timezone
+            finished_at = current - 5000
+            final_event = json.dumps({
+                "type": "assistant",
+                "timestamp": datetime.fromtimestamp(finished_at / 1000, timezone.utc).isoformat(),
+                "message": {"role": "assistant", "stop_reason": "end_turn",
+                            "content": [{"type": "text"}]},
+            })
+            transcript.write_text(final_event)
+            self.assertIsNone(claude_terminal_answer(transcript, current))
+            with transcript.open("a") as handle:
+                handle.write("\n")
+            self.assertEqual(claude_terminal_answer(transcript, current), finished_at)
+            self.assertEqual(claude_terminal_answer(transcript, current), finished_at)
+
+            transcript.write_text("{}\n")
+            self.assertIsNone(claude_terminal_answer(transcript, current))
 
     def test_web_events_validate_origin_data_and_expire(self):
         with tempfile.TemporaryDirectory() as directory:
