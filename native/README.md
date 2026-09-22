@@ -14,10 +14,12 @@
 
 ```sh
 ./build.sh
-open 'dist/Agent Pet.app'
+open "$HOME/Applications/Agent Pet.app"
 ```
 
 脚本将相邻的 `collector/collector.py` 放入应用的 `Contents/Resources`。启动应用时会启动采集器；退出应用时会结束它启动的采集器进程。应用不会设置开机自启。
+
+构建脚本默认放到本机 `~/Applications`，避免源码位于 iCloud 同步目录时同步附加信息影响签名校验。可用 `AGENT_PET_OUTPUT_BUNDLE` 指定其他输出位置。
 
 ## 数据展示
 

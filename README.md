@@ -11,10 +11,12 @@
 ```sh
 cd native
 ./build.sh
-open "dist/Agent Pet.app"
+open "$HOME/Applications/Agent Pet.app"
 ```
 
 启动后桌宠显示在屏幕右下角，可拖动；鼠标移入显示面板。面板右上角有刷新、收起和退出按钮。应用退出时会停止它启动的本机收集器。当前版本不会自动添加开机启动项。
+
+构建脚本默认将应用放到本机 `~/Applications`，避免源码位于 iCloud 同步目录时同步附加信息影响签名校验。可用 `AGENT_PET_OUTPUT_BUNDLE` 指定其他输出位置。
 
 桌宠头上的绿色数字表示正在运行的对话数（`working` 或 `waiting`），黄色数字表示有新回答但尚未在桌宠中查看或标记已读的对话数，蓝色数字表示含有运行中对话的活跃任务族数。
 
@@ -57,7 +59,7 @@ open "dist/Agent Pet.app"
 
 本机数据保存在 `~/.agent-pet`：任务汇总为 `tasks.json`，未读状态为 `read-state.json`，随手想法为 `thoughts.jsonl`。目录与这些文件仅供当前用户访问。
 
-如需删除，退出桌宠，移除浏览器扩展，再删除 `native/dist/Agent Pet.app` 和 `~/.agent-pet`。源码仍保留在本项目中。
+如需删除，退出桌宠，移除浏览器扩展，再删除 `~/Applications/Agent Pet.app` 和 `~/.agent-pet`。源码仍保留在本项目中。
 
 ## 开发验证
 

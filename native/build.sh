@@ -3,7 +3,11 @@ set -euo pipefail
 
 SCRIPT_DIR="${0:A:h}"
 COLLECTOR_SOURCE="$SCRIPT_DIR/../collector/collector.py"
-OUTPUT_BUNDLE="$SCRIPT_DIR/dist/Agent Pet.app"
+OUTPUT_BUNDLE="${AGENT_PET_OUTPUT_BUNDLE:-$HOME/Applications/Agent Pet.app}"
+if [[ "${OUTPUT_BUNDLE:t}" != "Agent Pet.app" ]]; then
+  print -u2 "Output must be named Agent Pet.app"
+  exit 1
+fi
 STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp/}agent-pet.XXXXXX")"
 trap 'rm -rf "$STAGE_DIR"' EXIT
 APP_BUNDLE="$STAGE_DIR/Agent Pet.app"
@@ -58,9 +62,11 @@ plutil -lint "$CONTENTS/Info.plist"
 xattr -cr "$APP_BUNDLE"
 codesign --force --sign - "$APP_BUNDLE"
 codesign --verify --deep --strict "$APP_BUNDLE"
-mkdir -p "$SCRIPT_DIR/dist"
+mkdir -p "${OUTPUT_BUNDLE:h}"
 rm -rf "$OUTPUT_BUNDLE"
 ditto "$APP_BUNDLE" "$OUTPUT_BUNDLE"
 xattr -cr "$OUTPUT_BUNDLE"
+xattr -d com.apple.FinderInfo "$OUTPUT_BUNDLE" 2>/dev/null || true
+xattr -d 'com.apple.fileprovider.fpfs#P' "$OUTPUT_BUNDLE" 2>/dev/null || true
 codesign --verify --deep --strict "$OUTPUT_BUNDLE"
 print "Built $OUTPUT_BUNDLE"
