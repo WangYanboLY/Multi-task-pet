@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Agent Pet Tab Observer",
+  "version": "0.1.0",
+  "description": "Observe open ChatGPT and Claude conversation tabs for the local Agent Pet.",
+  "permissions": ["tabs", "scripting"],
+  "host_permissions": [
+    "https://chatgpt.com/*",
+    "https://claude.ai/*",
+    "http://127.0.0.1:56987/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://chatgpt.com/*", "https://claude.ai/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
