@@ -39,8 +39,8 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
     <key>CFBundleURLSchemes</key><array><string>agentpet</string></array>
     <key>CFBundleTypeRole</key><string>Viewer</string>
   </dict></array>
-  <key>CFBundleShortVersionString</key><string>0.5.3</string>
-  <key>CFBundleVersion</key><string>17</string>
+  <key>CFBundleShortVersionString</key><string>0.5.5</string>
+  <key>CFBundleVersion</key><string>19</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
@@ -51,9 +51,11 @@ PLIST
 MACOSX_DEPLOYMENT_TARGET=13.0 swiftc \
   -target "$(uname -m)-apple-macosx13.0" \
   -parse-as-library -O \
-  -framework AppKit -framework SwiftUI -framework UserNotifications \
+  -framework AppKit -framework ApplicationServices -framework SwiftUI -framework UserNotifications \
   "$SCRIPT_DIR/AgentPet.swift" \
   "$SCRIPT_DIR/AnswerInbox.swift" \
+  "$SCRIPT_DIR/ClaudeDesktopAX.swift" \
+  "$SCRIPT_DIR/ClaudeDesktopTaskState.swift" \
   "$SCRIPT_DIR/LocalNotifier.swift" \
   "$SCRIPT_DIR/ManualResolutionStore.swift" \
   "$SCRIPT_DIR/ThoughtStore.swift" \
@@ -108,8 +110,8 @@ build_notification_helper() {
     <key>CFBundleURLSchemes</key><array><string>$scheme</string></array>
     <key>CFBundleTypeRole</key><string>Viewer</string>
   </dict></array>
-  <key>CFBundleShortVersionString</key><string>0.5.3</string>
-  <key>CFBundleVersion</key><string>17</string>
+  <key>CFBundleShortVersionString</key><string>0.5.5</string>
+  <key>CFBundleVersion</key><string>19</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>

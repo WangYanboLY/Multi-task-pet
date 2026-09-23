@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import SwiftUI
 import UserNotifications
 
@@ -132,28 +133,38 @@ private final class TaskStore: ObservableObject {
     @Published private(set) var generatedAt: String?
     @Published private(set) var message: String = "正在读取任务…"
     @Published private(set) var hasSnapshot = false
+    @Published private(set) var claudeDesktopAccessRequired = false
 
     let fileURL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".agent-pet/tasks.json")
 
     private var timer: Timer?
+    private var collectorTasks: [AgentTask] = []
+    private var desktopTasks: [AgentTask] = []
+    private var collectorHasSnapshot = false
+    private var desktopScanInFlight = false
+    private let desktopState = ClaudeDesktopTaskState()
     var onSnapshot: (([AgentTask], [String]) -> Void)?
 
     init() {
         reload()
+        pollClaudeDesktop()
         timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.reload() }
+            Task { @MainActor in
+                self?.reload()
+                self?.pollClaudeDesktop()
+            }
         }
     }
 
     func reload() {
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            tasks = []
+            collectorTasks = []
             ignoredTaskIDs = []
             scheduledTaskIDs = []
             generatedAt = nil
-            hasSnapshot = false
-            message = "等待任务数据。采集器尚未写入 tasks.json。"
+            collectorHasSnapshot = false
+            publishTasks()
             return
         }
         do {
@@ -165,15 +176,67 @@ private final class TaskStore: ObservableObject {
             ignored.formUnion(snapshot.tasks.filter { $0.id.hasPrefix("claude-agent:") }.map(\.id))
             ignoredTaskIDs = Array(ignored)
             scheduledTaskIDs = Set(snapshot.scheduledTaskIds ?? [])
-            tasks = snapshot.tasks.filter { !ignored.contains($0.id) }
+            collectorTasks = snapshot.tasks.filter { !ignored.contains($0.id) }
             generatedAt = snapshot.generatedAt
-            hasSnapshot = true
-            message = tasks.isEmpty ? "目前没有观察到任务。" : ""
-            onSnapshot?(tasks, ignoredTaskIDs)
+            collectorHasSnapshot = true
+            publishTasks()
         } catch {
             // Keep the last good snapshot if a writer is replacing the file.
             message = "本次读取失败：\(error.localizedDescription)"
         }
+    }
+
+    func requestClaudeDesktopAccess() {
+        let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+        let options = [promptKey: true] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(options)
+        pollClaudeDesktop()
+    }
+
+    private func pollClaudeDesktop() {
+        guard !desktopScanInFlight else { return }
+        desktopScanInFlight = true
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let scan = ClaudeDesktopAX.scan()
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.desktopScanInFlight = false
+                self.applyClaudeDesktop(scan)
+            }
+        }
+    }
+
+    private func applyClaudeDesktop(_ scan: ClaudeDesktopScan) {
+        if case .unavailable(let reason) = scan {
+            claudeDesktopAccessRequired = reason == "accessibility_permission_denied"
+        } else {
+            claudeDesktopAccessRequired = false
+        }
+        desktopTasks = desktopState.update(scan).map { chat in
+            AgentTask(id: "claude-desktop:\(chat.key)", source: "Claude",
+                      familyId: "claude-desktop:\(chat.family)", family: chat.family,
+                      title: chat.title, topicLabel: nil, status: chat.status,
+                      updatedAt: chat.updatedAt, detail: "Claude 桌面聊天",
+                      completed: nil, total: nil, url: chat.url, answerRevision: nil)
+        }
+        publishTasks()
+    }
+
+    private func publishTasks() {
+        let webIDs = Set(collectorTasks.compactMap { task -> String? in
+            guard task.id.hasPrefix("web:claude:") else { return nil }
+            return UUID(uuidString: String(task.id.dropFirst("web:claude:".count)))?.uuidString.lowercased()
+        })
+        let desktop = desktopTasks.filter { task in
+            guard let uuid = UUID(uuidString: String(task.id.dropFirst("claude-desktop:".count))) else { return true }
+            return !webIDs.contains(uuid.uuidString.lowercased())
+        }
+        tasks = collectorTasks + desktop
+        hasSnapshot = collectorHasSnapshot || !desktop.isEmpty
+        message = tasks.isEmpty
+            ? (collectorHasSnapshot ? "目前没有观察到任务。" : "等待任务数据。采集器尚未写入 tasks.json。")
+            : ""
+        onSnapshot?(tasks, ignoredTaskIDs)
     }
 
     func families(for selected: [AgentTask]) -> [TaskFamily] {
@@ -215,7 +278,7 @@ private final class TaskStore: ObservableObject {
     var activeCount: Int { tasks.filter(\.isActive).count }
     var activeFamilyCount: Int { families(for: tasks.filter(\.isActive)).count }
     var isStale: Bool {
-        guard hasSnapshot else { return false }
+        guard collectorHasSnapshot else { return false }
         guard let date = TimeText.date(generatedAt) else { return true }
         return abs(Date().timeIntervalSince(date)) > 15
     }
@@ -316,6 +379,15 @@ private enum DestinationURL {
                items[0].name == "session", let sessionID = items[0].value,
                sessionID.hasPrefix("local_"),
                UUID(uuidString: String(sessionID.dropFirst("local_".count))) != nil {
+                return parsed
+            }
+            if scheme == "claude", SourceStyle.normalized(source) == "claude",
+               id.hasPrefix("claude-desktop:"), parsed.host == "claude.ai",
+               parsed.fragment == nil, parsed.query == nil,
+               parsed.path.hasPrefix("/chat/"),
+               let taskUUID = UUID(uuidString: String(id.dropFirst("claude-desktop:".count))),
+               let linkUUID = UUID(uuidString: String(parsed.path.dropFirst("/chat/".count))),
+               taskUUID == linkUUID {
                 return parsed
             }
         }
@@ -701,6 +773,24 @@ private struct DashboardView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(12)
                         .background(Palette.card, in: RoundedRectangle(cornerRadius: 12))
+                    }
+
+                    if selectedCategory == .claude && store.claudeDesktopAccessRequired {
+                        Button { store.requestClaudeDesktopAccess() } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "hand.raised")
+                                Text("允许读取 Claude 桌面聊天")
+                                Spacer()
+                                Image(systemName: "arrow.up.right")
+                            }
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Palette.mint)
+                            .padding(12)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Palette.card, in: RoundedRectangle(cornerRadius: 12))
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
                     }
 
                     if store.hasSnapshot && store.visibleCount(in: selectedCategory) == 0 && unreadAnswers(in: selectedCategory).isEmpty {
@@ -1466,6 +1556,17 @@ private final class PetAppDelegate: NSObject, NSApplicationDelegate, NSWindowDel
 @main
 private struct AgentPetApp {
     static func main() {
+        if ProcessInfo.processInfo.arguments.contains("--claude-desktop-diagnostic") {
+            switch ClaudeDesktopAX.scan() {
+            case .unavailable(let reason):
+                print("Claude desktop scan: \(reason)")
+            case .observed(let conversations):
+                let running = conversations.filter { $0.status == "working" }.count
+                let linked = conversations.filter { $0.url != nil }.count
+                print("Claude desktop scan: \(conversations.count) chats, \(running) running, \(linked) linked")
+            }
+            return
+        }
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         let delegate = PetAppDelegate()
