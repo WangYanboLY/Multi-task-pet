@@ -242,6 +242,15 @@ private enum TimeText {
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss zzz"
         return formatter.string(from: date)
     }
+
+    static func shortTime(_ raw: String?) -> String {
+        guard let parsed = date(raw) else { return "时间未知" }
+        let formatter = DateFormatter()
+        formatter.locale = .current
+        formatter.timeZone = .current
+        formatter.dateFormat = DateFormatter.dateFormat(fromTemplate: "hma", options: 0, locale: formatter.locale)
+        return formatter.string(from: parsed)
+    }
 }
 
 private enum StatusStyle {
@@ -523,6 +532,7 @@ private struct TaskRow: View {
 private struct FamilyCard: View {
     let family: TaskFamily
     let unreadIDs: Set<String>
+    let compactWhenCollapsed: Bool
     let onOpen: (AgentTask) -> Void
     let onResolve: (AgentTask) -> Void
     @State private var expanded = false
@@ -542,15 +552,19 @@ private struct FamilyCard: View {
                             .foregroundStyle(Palette.ink)
                             .lineLimit(2)
                         Spacer(minLength: 8)
-                        Text("\(family.tasks.count) 项")
+                        if !compactWhenCollapsed {
+                            Text("\(family.tasks.count) 项")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(Palette.muted)
+                        }
+                    }
+                    if !compactWhenCollapsed {
+                        Text(family.statusSummary)
                             .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(Palette.muted)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    Text(family.statusSummary)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(Palette.muted)
-                        .fixedSize(horizontal: false, vertical: true)
-                    if !expanded {
+                    if !expanded && !compactWhenCollapsed {
                         ForEach(Array(family.tasks.prefix(3))) { task in
                             Text("· \(task.displayTitle)")
                                 .font(.system(size: 10))
@@ -720,7 +734,7 @@ private struct DashboardView: View {
             thoughtComposer
         }
         .padding(17)
-        .frame(width: 420, height: 600)
+        .frame(width: 384, height: 470)
         .background(Palette.panel, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(Color.white.opacity(0.13), lineWidth: 1))
         .preferredColorScheme(.dark)
@@ -806,12 +820,13 @@ private struct DashboardView: View {
         if selectedFilter == .active {
             let active = visibleTasks(in: selectedCategory, filter: .active)
             let families = store.families(for: active)
-            sectionTitle("活跃对话", count: active.count)
+            sectionTitle("活跃项目")
             if families.isEmpty {
                 emptyLabel(ConversationFilter.active.emptyMessage)
             } else {
                 ForEach(families) { family in
                     FamilyCard(family: family, unreadIDs: unreadIDs,
+                               compactWhenCollapsed: true,
                                onOpen: openTask, onResolve: resolveTask)
                 }
             }
@@ -825,6 +840,7 @@ private struct DashboardView: View {
                 sectionTitle("待你操作", count: pendingTasks.count)
                 ForEach(pending) { family in
                     FamilyCard(family: family, unreadIDs: unreadIDs,
+                               compactWhenCollapsed: false,
                                onOpen: openTask, onResolve: resolveTask)
                 }
                 sectionTitle("未查看的新回答", count: unread.count)
@@ -947,7 +963,7 @@ private struct DashboardView: View {
             }
             HStack(spacing: 8) {
                 SourcePill(source: answer.source)
-                Text("新回答：\(TimeText.display(answer.completedAt))")
+                Text(TimeText.shortTime(answer.completedAt))
                     .font(.system(size: 10))
                     .foregroundStyle(Palette.muted)
                 Spacer()
@@ -1126,13 +1142,15 @@ private struct DashboardView: View {
         selectedFilter = .needsHandling
     }
 
-    private func sectionTitle(_ title: String, count: Int) -> some View {
+    private func sectionTitle(_ title: String, count: Int? = nil) -> some View {
         HStack(spacing: 7) {
             Text(title).font(.system(size: 13, weight: .bold)).foregroundStyle(Palette.ink)
-            Text("\(count)").font(.system(size: 10, weight: .bold))
-                .foregroundStyle(Palette.muted)
-                .padding(.horizontal, 6).padding(.vertical, 2)
-                .background(Color.white.opacity(0.07), in: Capsule())
+            if let count {
+                Text("\(count)").font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(Palette.muted)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Color.white.opacity(0.07), in: Capsule())
+            }
         }
     }
 
@@ -1239,7 +1257,7 @@ private final class PetAppDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         petWindow.contentView = petView
         petWindow.orderFrontRegardless()
 
-        dashboardWindow = makePanel(frame: NSRect(x: 0, y: 0, width: 420, height: 600), shadow: true)
+        dashboardWindow = makePanel(frame: NSRect(x: 0, y: 0, width: 384, height: 470), shadow: true)
         let dashboardView = HoverHostingView(rootView: DashboardView(
             store: store,
             inbox: inbox,

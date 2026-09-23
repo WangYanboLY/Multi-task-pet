@@ -39,8 +39,8 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
     <key>CFBundleURLSchemes</key><array><string>agentpet</string></array>
     <key>CFBundleTypeRole</key><string>Viewer</string>
   </dict></array>
-  <key>CFBundleShortVersionString</key><string>0.5.1</string>
-  <key>CFBundleVersion</key><string>15</string>
+  <key>CFBundleShortVersionString</key><string>0.5.3</string>
+  <key>CFBundleVersion</key><string>17</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
@@ -108,8 +108,8 @@ build_notification_helper() {
     <key>CFBundleURLSchemes</key><array><string>$scheme</string></array>
     <key>CFBundleTypeRole</key><string>Viewer</string>
   </dict></array>
-  <key>CFBundleShortVersionString</key><string>0.5.1</string>
-  <key>CFBundleVersion</key><string>15</string>
+  <key>CFBundleShortVersionString</key><string>0.5.3</string>
+  <key>CFBundleVersion</key><string>17</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
