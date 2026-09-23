@@ -1193,22 +1193,30 @@ private final class PetAppDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     private var hoverTimer: Timer?
     private var outsideSince: Date?
     private var collectorProcess: Process?
+    private var pendingNotificationTaskIDs: [String] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         notifier.prepare(onOpen: { [weak self] taskID in self?.openFromNotification(taskID) })
         if ProcessInfo.processInfo.arguments.contains("--notification-icon-test") {
-            let content = UNMutableNotificationContent()
-            content.title = "Agent Pet 图标测试"
-            content.body = "请查看这条提醒左侧的应用图标。"
-            let request = UNNotificationRequest(
-                identifier: "agent-pet.icon-test.\(UUID().uuidString)",
-                content: content,
-                trigger: nil
-            )
-            UNUserNotificationCenter.current().add(request) { error in
-                if let error { NSLog("Agent Pet icon test notification failed: %@", error.localizedDescription) }
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, authorizationError in
+                if let authorizationError {
+                    NSLog("Agent Pet icon test authorization failed: %@", authorizationError.localizedDescription)
+                }
+                guard granted else { return }
+                let content = UNMutableNotificationContent()
+                content.title = "Agent Pet 图标测试"
+                content.body = "请查看这条提醒左侧的应用图标。"
+                let request = UNNotificationRequest(
+                    identifier: "agent-pet.icon-test.\(UUID().uuidString)",
+                    content: content,
+                    trigger: nil
+                )
+                UNUserNotificationCenter.current().add(request) { error in
+                    if let error { NSLog("Agent Pet icon test notification failed: %@", error.localizedDescription) }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 4) { NSApp.terminate(nil) }
+                }
             }
-            Timer.scheduledTimer(withTimeInterval: 4, repeats: false) { _ in NSApp.terminate(nil) }
+            Timer.scheduledTimer(withTimeInterval: 90, repeats: false) { _ in NSApp.terminate(nil) }
             return
         }
         store.onSnapshot = { [weak self] tasks, ignoredIDs in
@@ -1248,6 +1256,9 @@ private final class PetAppDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.checkHover() }
         }
+        let pending = pendingNotificationTaskIDs
+        pendingNotificationTaskIDs.removeAll()
+        pending.forEach(openFromNotification)
     }
 
     private func handleSnapshot(_ tasks: [AgentTask], ignoredIDs: [String]) {
@@ -1294,6 +1305,39 @@ private final class PetAppDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         }
         route.showNeedsHandling(source: task?.source ?? answer?.source ?? "")
         showDashboard()
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            guard url.scheme == "agentpet",
+                  let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                  components.fragment == nil else { continue }
+            switch components.host {
+            case "task":
+                let queryID = components.queryItems?.first(where: { $0.name == "taskID" })?.value
+                let pathID = components.percentEncodedPath.hasPrefix("/")
+                    ? String(components.percentEncodedPath.dropFirst()).removingPercentEncoding : nil
+                guard let taskID = queryID ?? pathID, !taskID.isEmpty else { continue }
+                if dashboardWindow == nil {
+                    pendingNotificationTaskIDs.append(taskID)
+                } else {
+                    openFromNotification(taskID)
+                }
+            case "notification-failed":
+                guard components.path.isEmpty,
+                      let items = components.queryItems, items.count == 3,
+                      Set(items.map(\.name)) == Set(["taskID", "source", "title"]),
+                      let taskID = items.first(where: { $0.name == "taskID" })?.value,
+                      let source = items.first(where: { $0.name == "source" })?.value,
+                      let title = items.first(where: { $0.name == "title" })?.value,
+                      let unread = inbox.unread.first(where: { $0.id == taskID }),
+                      SourceStyle.normalized(unread.source) == SourceStyle.normalized(source),
+                      unread.title == title else { continue }
+                notifier.notifyFromHelperFailure(taskID: taskID, source: source, title: title)
+            default:
+                continue
+            }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

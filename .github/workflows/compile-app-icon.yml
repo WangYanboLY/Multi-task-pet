@@ -23,30 +23,47 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          CATALOG="$RUNNER_TEMP/Assets.xcassets"
-          mkdir -p "$CATALOG/AppIcon.appiconset"
           xcrun swiftc -O -framework AppKit native/GenerateIcon.swift -o "$RUNNER_TEMP/GenerateIcon"
-          "$RUNNER_TEMP/GenerateIcon" "$CATALOG/AppIcon.appiconset"
-          cp native/AppIconContents.json "$CATALOG/AppIcon.appiconset/Contents.json"
-          python3 -m json.tool "$CATALOG/AppIcon.appiconset/Contents.json" >/dev/null
+          for palette in main gpt claude; do
+            CATALOG="$RUNNER_TEMP/$palette/Assets.xcassets"
+            mkdir -p "$CATALOG/AppIcon.appiconset"
+            "$RUNNER_TEMP/GenerateIcon" "$CATALOG/AppIcon.appiconset" "$palette"
+            cp native/AppIconContents.json "$CATALOG/AppIcon.appiconset/Contents.json"
+            python3 -m json.tool "$CATALOG/AppIcon.appiconset/Contents.json" >/dev/null
+          done
       - name: Compile and inspect asset catalog
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/compiled"
-          xcrun actool "$RUNNER_TEMP/Assets.xcassets" \
-            --compile "$RUNNER_TEMP/compiled" \
-            --platform macosx \
-            --minimum-deployment-target 13.0 \
-            --target-device mac \
-            --app-icon AppIcon \
-            --output-partial-info-plist "$RUNNER_TEMP/compiled/assetcatalog_generated_info.plist" \
-            --output-format human-readable-text \
-            --errors --warnings
-          python3 native/validate_asset_catalog.py "$RUNNER_TEMP/compiled/Assets.car"
-      - name: Upload compiled icon
+          for palette in main gpt claude; do
+            OUTPUT="$RUNNER_TEMP/$palette/compiled"
+            mkdir -p "$OUTPUT"
+            xcrun actool "$RUNNER_TEMP/$palette/Assets.xcassets" \
+              --compile "$OUTPUT" \
+              --platform macosx \
+              --minimum-deployment-target 13.0 \
+              --target-device mac \
+              --app-icon AppIcon \
+              --output-partial-info-plist "$OUTPUT/assetcatalog_generated_info.plist" \
+              --output-format human-readable-text \
+              --errors --warnings
+            python3 native/validate_asset_catalog.py "$OUTPUT/Assets.car"
+          done
+      - name: Upload main icon
         uses: actions/upload-artifact@v4
         with:
           name: agent-pet-assets-car
-          path: ${{ runner.temp }}/compiled/Assets.car
+          path: ${{ runner.temp }}/main/compiled/Assets.car
+          if-no-files-found: error
+      - name: Upload GPT notification icon
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-pet-gpt-assets-car
+          path: ${{ runner.temp }}/gpt/compiled/Assets.car
+          if-no-files-found: error
+      - name: Upload Claude notification icon
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-pet-claude-assets-car
+          path: ${{ runner.temp }}/claude/compiled/Assets.car
           if-no-files-found: error

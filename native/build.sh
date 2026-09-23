@@ -33,8 +33,14 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>Agent Pet</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.4.8</string>
-  <key>CFBundleVersion</key><string>12</string>
+  <key>CFBundleURLTypes</key>
+  <array><dict>
+    <key>CFBundleURLName</key><string>local.agentpet.task</string>
+    <key>CFBundleURLSchemes</key><array><string>agentpet</string></array>
+    <key>CFBundleTypeRole</key><string>Viewer</string>
+  </dict></array>
+  <key>CFBundleShortVersionString</key><string>0.5.0</string>
+  <key>CFBundleVersion</key><string>14</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
@@ -69,6 +75,64 @@ ICONSET="$STAGE_DIR/AgentPet.iconset"
 "$ICON_BUILDER" "$ICONSET"
 iconutil -c icns -o "$CONTENTS/Resources/AgentPet.icns" "$ICONSET"
 
+MACOSX_DEPLOYMENT_TARGET=13.0 swiftc \
+  -target "$(uname -m)-apple-macosx13.0" \
+  -parse-as-library -O -swift-version 6 -strict-concurrency=complete \
+  -framework AppKit -framework UserNotifications \
+  "$SCRIPT_DIR/SourceNotificationHelper.swift" \
+  -o "$STAGE_DIR/SourceNotificationHelper"
+
+build_notification_helper() {
+  local kind="$1"
+  local display_name="$2"
+  local scheme="agentpet-$kind"
+  local helper_bundle="$STAGE_DIR/Agent Pet $display_name Notifications.app"
+  local helper_contents="$helper_bundle/Contents"
+  mkdir -p "$helper_contents/MacOS" "$helper_contents/Resources"
+  cat > "$helper_contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key><string>zh_CN</string>
+  <key>CFBundleDisplayName</key><string>Agent Pet · $display_name</string>
+  <key>CFBundleExecutable</key><string>SourceNotificationHelper</string>
+  <key>CFBundleIdentifier</key><string>local.agentpet.notifications.$kind</string>
+  <key>CFBundleIconFile</key><string>AgentPet.icns</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>CFBundleName</key><string>Agent Pet $display_name Notifications</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleURLTypes</key>
+  <array><dict>
+    <key>CFBundleURLName</key><string>local.agentpet.notifications.$kind</string>
+    <key>CFBundleURLSchemes</key><array><string>$scheme</string></array>
+    <key>CFBundleTypeRole</key><string>Viewer</string>
+  </dict></array>
+  <key>CFBundleShortVersionString</key><string>0.5.0</string>
+  <key>CFBundleVersion</key><string>14</string>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <key>LSUIElement</key><true/>
+  <key>NSHighResolutionCapable</key><true/>
+</dict>
+</plist>
+PLIST
+  cp -X "$STAGE_DIR/SourceNotificationHelper" "$helper_contents/MacOS/SourceNotificationHelper"
+  local helper_iconset="$STAGE_DIR/AgentPet-$kind.iconset"
+  "$ICON_BUILDER" "$helper_iconset" "$kind"
+  iconutil -c icns -o "$helper_contents/Resources/AgentPet.icns" "$helper_iconset"
+  local helper_assets="$SCRIPT_DIR/prebuilt/${display_name}Assets.car"
+  if [[ -f "$helper_assets" ]]; then
+    python3 "$SCRIPT_DIR/validate_asset_catalog.py" "$helper_assets"
+    cp -X "$helper_assets" "$helper_contents/Resources/Assets.car"
+    plutil -insert CFBundleIconName -string AppIcon "$helper_contents/Info.plist"
+  fi
+  plutil -lint "$helper_contents/Info.plist"
+  codesign --force --sign - "$helper_bundle"
+}
+
+build_notification_helper gpt GPT
+build_notification_helper claude Claude
+
 # Full Xcode compiles this catalog in CI. The local build keeps working with
 # Command Line Tools; the traditional .icns remains available as a fallback.
 ASSETS_CAR="${AGENT_PET_ASSETS_CAR:-$SCRIPT_DIR/prebuilt/Assets.car}"
@@ -100,8 +164,47 @@ xattr -cr "$OUTPUT_BUNDLE"
 xattr -d com.apple.FinderInfo "$OUTPUT_BUNDLE" 2>/dev/null || true
 xattr -d 'com.apple.fileprovider.fpfs#P' "$OUTPUT_BUNDLE" 2>/dev/null || true
 codesign --verify --deep --strict "$OUTPUT_BUNDLE"
+for display_name in GPT Claude; do
+  helper_name="Agent Pet $display_name Notifications.app"
+  helper_output="${OUTPUT_BUNDLE:h}/$helper_name"
+  rm -rf "$helper_output"
+  ditto "$STAGE_DIR/$helper_name" "$helper_output"
+  xattr -cr "$helper_output"
+  codesign --verify --deep --strict "$helper_output"
+done
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
-if [[ -x "$LSREGISTER" ]]; then
-  "$LSREGISTER" -f "$OUTPUT_BUNDLE" || print -u2 "Warning: Could not refresh Launch Services registration"
+if [[ "${AGENT_PET_SKIP_REGISTRATION:-0}" != 1 ]]; then
+  if [[ ! -x "$LSREGISTER" ]]; then
+    print -u2 "Launch Services registration tool is unavailable"
+    exit 1
+  fi
+  "$LSREGISTER" -f "$OUTPUT_BUNDLE"
+  "$LSREGISTER" -f "${OUTPUT_BUNDLE:h}/Agent Pet GPT Notifications.app"
+  "$LSREGISTER" -f "${OUTPUT_BUNDLE:h}/Agent Pet Claude Notifications.app"
+  AGENT_PET_INSTALL_DIR="${OUTPUT_BUNDLE:h}" swift -e '
+    import AppKit
+    import CoreServices
+    import Foundation
+    let directory = ProcessInfo.processInfo.environment["AGENT_PET_INSTALL_DIR"]!
+    for (scheme, name, bundleID) in [
+      ("agentpet", "Agent Pet.app", "local.agentpet.desktop"),
+      ("agentpet-gpt", "Agent Pet GPT Notifications.app", "local.agentpet.notifications.gpt"),
+      ("agentpet-claude", "Agent Pet Claude Notifications.app", "local.agentpet.notifications.claude")
+    ] {
+      let url = URL(string: "\(scheme)://notify")!
+      let expected = URL(fileURLWithPath: directory).appendingPathComponent(name).standardizedFileURL
+      if NSWorkspace.shared.urlForApplication(toOpen: url)?.standardizedFileURL != expected {
+        let status = LSSetDefaultHandlerForURLScheme(scheme as CFString, bundleID as CFString)
+        guard status == noErr else {
+          fputs("Could not set \(scheme) URL handler (\(status))\n", stderr)
+          exit(1)
+        }
+      }
+      guard NSWorkspace.shared.urlForApplication(toOpen: url)?.standardizedFileURL == expected else {
+        fputs("Launch Services did not resolve \(scheme) to \(expected.path)\n", stderr)
+        exit(1)
+      }
+    }
+  '
 fi
 print "Built $OUTPUT_BUNDLE"

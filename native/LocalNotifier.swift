@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import os
 import UserNotifications
@@ -34,7 +35,28 @@ final class LocalNotifier: NSObject, UNUserNotificationCenterDelegate {
     func notify(taskID: String, source: String, title: String) {
         guard !taskID.isEmpty else { return }
         let event = PendingNotification(taskID: taskID, source: source, title: title)
+        if let url = Self.helperURL(for: event), NSWorkspace.shared.open(url) {
+            return
+        }
 
+        // Older installations may not contain the source-specific helper apps.
+        // The main app still delivers those answers rather than dropping them.
+        notificationLogger.notice("Source notification helper unavailable; using main app")
+        notifyFromMainApp(event)
+    }
+
+    /// Called only when a source helper accepted the URL but could not add its
+    /// notification. This deliberately bypasses helper dispatch to avoid a loop.
+    func notifyFromHelperFailure(taskID: String, source: String, title: String) {
+        let event = PendingNotification(taskID: taskID, source: source, title: title)
+        guard !event.taskID.isEmpty, event.taskID.utf8.count <= 512,
+              !event.source.isEmpty, event.source.count <= 48,
+              event.title.count <= 500,
+              Self.helperURL(for: event) != nil else { return }
+        notifyFromMainApp(event)
+    }
+
+    private func notifyFromMainApp(_ event: PendingNotification) {
         switch permissionState {
         case .granted:
             schedule(event)
@@ -62,6 +84,31 @@ final class LocalNotifier: NSObject, UNUserNotificationCenterDelegate {
                 }
             }
         }
+    }
+
+    private static func helperURL(for event: PendingNotification) -> URL? {
+        let normalized = event.source.lowercased()
+            .replacingOccurrences(of: "-", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
+        let scheme: String
+        switch normalized {
+        case "codex", "chatgpt", "gpt":
+            scheme = "agentpet-gpt"
+        case "claude", "claude_code", "claudecode":
+            scheme = "agentpet-claude"
+        default:
+            return nil
+        }
+        guard event.taskID.utf8.count <= 512 else { return nil }
+        var components = URLComponents()
+        components.scheme = scheme
+        components.host = "notify"
+        components.queryItems = [
+            URLQueryItem(name: "taskID", value: event.taskID),
+            URLQueryItem(name: "source", value: String(event.source.prefix(48))),
+            URLQueryItem(name: "title", value: String(event.title.prefix(500)))
+        ]
+        return components.url
     }
 
     private func schedule(_ event: PendingNotification) {
