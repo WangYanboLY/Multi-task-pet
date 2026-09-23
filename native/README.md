@@ -21,7 +21,7 @@ open "$HOME/Applications/Agent Pet.app"
 
 构建脚本默认放到本机 `~/Applications`，避免源码位于 iCloud 同步目录时同步附加信息影响签名校验。可用 `AGENT_PET_OUTPUT_BUNDLE` 指定其他输出位置。
 
-构建时，`GenerateIcon.swift` 会生成并打包 Agent Pet 图标；macOS 通知中心的提醒使用这个应用图标。
+构建时，`GenerateIcon.swift` 会生成传统的 `AgentPet.icns`。完整 Xcode 环境中的 GitHub Actions 工作流还会从同一批 PNG 生成 `Assets.car`，产物以 `agent-pet-assets-car` 附件保存。将工作流产物放在 `native/prebuilt/Assets.car` 后，本机构建会先用 `assetutil --info` 验证其中存在 `AppIcon`，再将它和传统图标一同打包，并在应用信息中设置 `CFBundleIconName`。也可用 `AGENT_PET_ASSETS_CAR` 指定产物位置。只有 Command Line Tools、没有该产物时仍可构建传统图标版本。不要从其他应用复制 `Assets.car`：它必须由本仓库的 `GenerateIcon.swift`、`AppIconContents.json` 和工作流一起生成。
 
 ## 数据展示
 

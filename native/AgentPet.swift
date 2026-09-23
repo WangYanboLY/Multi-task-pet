@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UserNotifications
 
 private enum Palette {
     static let ink = Color(red: 0.91, green: 0.94, blue: 0.99)
@@ -366,12 +367,12 @@ private struct PetView: View {
                 .foregroundStyle(Color(red: 0.07, green: 0.22, blue: 0.31))
                 .offset(y: 13)
 
-            HStack(spacing: 3) {
-                metric(store.activeCount, color: Palette.mint, label: "正在运行的对话")
-                metric(inbox.unreadCount, color: Palette.amber, label: "未查看的新回答")
-                metric(store.activeFamilyCount, color: Palette.sky, label: "活跃对话族")
-            }
-            .offset(y: -45)
+            metric(store.activeCount, color: Palette.mint, label: "正在运行的对话", diameter: 26)
+                .offset(x: -32, y: -40)
+            metric(inbox.unreadCount, color: Palette.amber, label: "未查看的新回答", diameter: 31)
+                .offset(x: 0, y: -46)
+            metric(store.activeFamilyCount, color: Palette.sky, label: "活跃对话族", diameter: 23)
+                .offset(x: 29, y: -38)
         }
         .frame(width: 118, height: 126)
         .contentShape(Rectangle())
@@ -379,13 +380,14 @@ private struct PetView: View {
         .accessibilityLabel("Agent Pet，\(store.activeCount) 个运行中的对话，\(inbox.unreadCount) 个未查看的新回答，\(store.activeFamilyCount) 个活跃对话族，悬停查看详情")
     }
 
-    private func metric(_ count: Int, color: Color, label: String) -> some View {
+    private func metric(_ count: Int, color: Color, label: String, diameter: CGFloat) -> some View {
         Circle()
             .fill(color)
-            .frame(width: 25, height: 25)
+            .frame(width: diameter, height: diameter)
             .overlay {
                 Text(count > 9 ? "9+" : "\(count)")
-                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .font(.system(size: diameter < 25 ? 9 : (diameter > 30 ? 11 : 10),
+                                  weight: .bold, design: .rounded))
                     .foregroundStyle(Color(red: 0.06, green: 0.16, blue: 0.23))
             }
             .overlay(Circle().stroke(Color.white.opacity(0.92), lineWidth: 1.5))
@@ -1194,6 +1196,21 @@ private final class PetAppDelegate: NSObject, NSApplicationDelegate, NSWindowDel
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         notifier.prepare(onOpen: { [weak self] taskID in self?.openFromNotification(taskID) })
+        if ProcessInfo.processInfo.arguments.contains("--notification-icon-test") {
+            let content = UNMutableNotificationContent()
+            content.title = "Agent Pet 图标测试"
+            content.body = "请查看这条提醒左侧的应用图标。"
+            let request = UNNotificationRequest(
+                identifier: "agent-pet.icon-test.\(UUID().uuidString)",
+                content: content,
+                trigger: nil
+            )
+            UNUserNotificationCenter.current().add(request) { error in
+                if let error { NSLog("Agent Pet icon test notification failed: %@", error.localizedDescription) }
+            }
+            Timer.scheduledTimer(withTimeInterval: 4, repeats: false) { _ in NSApp.terminate(nil) }
+            return
+        }
         store.onSnapshot = { [weak self] tasks, ignoredIDs in
             self?.handleSnapshot(tasks, ignoredIDs: ignoredIDs)
         }

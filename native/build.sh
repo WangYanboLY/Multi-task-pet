@@ -33,8 +33,8 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>Agent Pet</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.4.7</string>
-  <key>CFBundleVersion</key><string>11</string>
+  <key>CFBundleShortVersionString</key><string>0.4.8</string>
+  <key>CFBundleVersion</key><string>12</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
@@ -68,6 +68,15 @@ MACOSX_DEPLOYMENT_TARGET=13.0 swiftc \
 ICONSET="$STAGE_DIR/AgentPet.iconset"
 "$ICON_BUILDER" "$ICONSET"
 iconutil -c icns -o "$CONTENTS/Resources/AgentPet.icns" "$ICONSET"
+
+# Full Xcode compiles this catalog in CI. The local build keeps working with
+# Command Line Tools; the traditional .icns remains available as a fallback.
+ASSETS_CAR="${AGENT_PET_ASSETS_CAR:-$SCRIPT_DIR/prebuilt/Assets.car}"
+if [[ -f "$ASSETS_CAR" ]]; then
+  python3 "$SCRIPT_DIR/validate_asset_catalog.py" "$ASSETS_CAR"
+  cp -X "$ASSETS_CAR" "$CONTENTS/Resources/Assets.car"
+  plutil -insert CFBundleIconName -string AppIcon "$CONTENTS/Info.plist"
+fi
 
 cp -X "$COLLECTOR_SOURCE" "$CONTENTS/Resources/collector.py"
 cp -X "$SCRIPT_DIR/../collector/topic_context.py" "$CONTENTS/Resources/topic_context.py"

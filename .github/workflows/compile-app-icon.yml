@@ -1,0 +1,52 @@
+name: Compile macOS app icon
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/compile-app-icon.yml
+      - native/GenerateIcon.swift
+      - native/AppIconContents.json
+      - native/validate_asset_catalog.py
+      - native/build.sh
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate icon images
+        shell: bash
+        run: |
+          set -euo pipefail
+          CATALOG="$RUNNER_TEMP/Assets.xcassets"
+          mkdir -p "$CATALOG/AppIcon.appiconset"
+          xcrun swiftc -O -framework AppKit native/GenerateIcon.swift -o "$RUNNER_TEMP/GenerateIcon"
+          "$RUNNER_TEMP/GenerateIcon" "$CATALOG/AppIcon.appiconset"
+          cp native/AppIconContents.json "$CATALOG/AppIcon.appiconset/Contents.json"
+          python3 -m json.tool "$CATALOG/AppIcon.appiconset/Contents.json" >/dev/null
+      - name: Compile and inspect asset catalog
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/compiled"
+          xcrun actool "$RUNNER_TEMP/Assets.xcassets" \
+            --compile "$RUNNER_TEMP/compiled" \
+            --platform macosx \
+            --minimum-deployment-target 13.0 \
+            --target-device mac \
+            --app-icon AppIcon \
+            --output-partial-info-plist "$RUNNER_TEMP/compiled/assetcatalog_generated_info.plist" \
+            --output-format human-readable-text \
+            --errors --warnings
+          python3 native/validate_asset_catalog.py "$RUNNER_TEMP/compiled/Assets.car"
+      - name: Upload compiled icon
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-pet-assets-car
+          path: ${{ runner.temp }}/compiled/Assets.car
+          if-no-files-found: error
