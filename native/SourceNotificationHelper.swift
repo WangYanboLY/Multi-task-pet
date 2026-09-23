@@ -30,7 +30,7 @@ private struct NotificationPayload {
 
 @MainActor
 private final class SourceNotificationApp: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
-    private enum Authorization {
+    private enum Authorization: Equatable {
         case notRequested
         case requesting
         case granted
@@ -63,7 +63,9 @@ private final class SourceNotificationApp: NSObject, NSApplicationDelegate, UNUs
             NSApp.terminate(nil)
             return
         }
-        armExit(after: 60)
+        if pending.isEmpty, authorization != .requesting {
+            armExit(after: 60)
+        }
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {

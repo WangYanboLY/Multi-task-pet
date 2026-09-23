@@ -368,11 +368,11 @@ private struct PetView: View {
                 .offset(y: 13)
 
             metric(store.activeCount, color: Palette.mint, label: "正在运行的对话", diameter: 26)
-                .offset(x: -32, y: -40)
+                .offset(x: 43, y: 17)
             metric(inbox.unreadCount, color: Palette.amber, label: "未查看的新回答", diameter: 31)
-                .offset(x: 0, y: -46)
+                .offset(x: 42, y: 45)
             metric(store.activeFamilyCount, color: Palette.sky, label: "活跃对话族", diameter: 23)
-                .offset(x: 29, y: -38)
+                .offset(x: 16, y: 50)
         }
         .frame(width: 118, height: 126)
         .contentShape(Rectangle())

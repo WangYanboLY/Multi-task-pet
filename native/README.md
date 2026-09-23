@@ -21,7 +21,7 @@ open "$HOME/Applications/Agent Pet.app"
 
 构建脚本默认放到本机 `~/Applications`，避免源码位于 iCloud 同步目录时同步附加信息影响签名校验。可用 `AGENT_PET_OUTPUT_BUNDLE` 指定其他输出位置。
 
-构建时，`GenerateIcon.swift` 会生成传统的 `AgentPet.icns`。完整 Xcode 环境中的 GitHub Actions 工作流还会从同一批 PNG 生成 `Assets.car`，产物以 `agent-pet-assets-car` 附件保存。将工作流产物放在 `native/prebuilt/Assets.car` 后，本机构建会先用 `assetutil --info` 验证其中存在 `AppIcon`，再将它和传统图标一同打包，并在应用信息中设置 `CFBundleIconName`。也可用 `AGENT_PET_ASSETS_CAR` 指定产物位置。只有 Command Line Tools、没有该产物时仍可构建传统图标版本。不要从其他应用复制 `Assets.car`：它必须由本仓库的 `GenerateIcon.swift`、`AppIconContents.json` 和工作流一起生成。
+构建时，`GenerateIcon.swift` 会为主应用及 GPT、Claude 通知辅助应用分别生成传统的 `AgentPet.icns`。仓库附带的主应用 `native/prebuilt/Assets.car` 由完整 Xcode 环境中的 GitHub Actions 工作流编译。工作流还会把三种配色的现代图标分别保存为 `agent-pet-assets-car`、`agent-pet-gpt-assets-car`、`agent-pet-claude-assets-car` 附件。若把后两份产物放在 `native/prebuilt/GPTAssets.car` 和 `native/prebuilt/ClaudeAssets.car`，构建脚本会验证并额外打包；当前 GPT 和 Claude 提醒已用各自的 `.icns` 图标在通知中心验证显示。主应用的资源也可用 `AGENT_PET_ASSETS_CAR` 指定新产物位置。不要从其他应用复制 `Assets.car`：它必须由本仓库的 `GenerateIcon.swift`、`AppIconContents.json` 和工作流生成。构建脚本把两个辅助应用与主应用安装在同一个目录、分别登记 URL 跳转；它们没有 Dock 图标，首次通知需要各自授权。
 
 ## 数据展示
 
@@ -41,7 +41,7 @@ Codex 与 Claude Code 子 agent 不单独进入列表、头顶数字或未读新
 
 勾选任务的“已处理”后，该任务从当前两类列表移到可折叠的“已处理”区域；取消勾选即可恢复。若该任务有未读新回答，勾选时也会标为已读，让黄色数字减少。桌宠将这一选择持久保存在 `~/.agent-pet/resolved-tasks.json`。采集器之后观察到明确的任务状态变化或新的完成回答标记时，会自动恢复该任务。网页标签的定期观察时间更新，以及状态因标签过期变成 `unknown`，都不算新的进展，不会让手动处理的任务反复出现。绿色运行中对话数和蓝色活跃任务族数仍按原始采集状态计算。
 
-桌宠观察到以前未记录的回答完成标记时尝试发送 macOS 本地通知，并将它加入黄色数字。首次建立观察基线时不会产生历史提醒。点通知或从面板成功打开 Codex／网页对话后标为已读；没有可打开入口的记录可手动点“标为已读”。桌宠无法可靠得知用户是否已经从其他应用打开并读过回答。
+桌宠观察到以前未记录的回答完成标记时尝试发送 macOS 本地通知，并将它加入黄色数字。首次建立观察基线时不会产生历史提醒。Codex／ChatGPT 的提醒使用灰蓝色 GPT 图标，Claude／Claude Code 的提醒使用橘色 Claude 图标；两类通知分别由对应辅助应用发送。点通知或从面板成功打开对话后标为已读；没有可打开入口的记录可手动点“标为已读”。桌宠无法可靠得知用户是否已经从其他应用打开并读过回答。
 
 面板底部有随手想法输入框；发送后保存在本机 `~/.agent-pet/thoughts.jsonl`，历史可在面板内展开。未读状态保存在 `~/.agent-pet/read-state.json`。`~/.agent-pet` 目录权限为 `0700`，本地状态文件权限为 `0600`。想法不会发送给模型服务。
 
